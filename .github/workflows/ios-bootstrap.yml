@@ -1,0 +1,51 @@
+name: iOS ARM64 bootstrap
+
+on:
+  push:
+    branches:
+      - main
+      - "ios/**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  portability-and-simulator:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Portable runtime smoke test (macOS)
+        run: |
+          set -euo pipefail
+          xcrun clang -std=c11 -O2 -Wall -Wextra ios/Portability/Probe.c ios/Portability/ProbeCli.c -o "$RUNNER_TEMP/ssbu-portability-test"
+          "$RUNNER_TEMP/ssbu-portability-test"
+
+      - name: iOS ARM64 C syntax check
+        run: |
+          set -euo pipefail
+          xcrun --sdk iphoneos clang -std=c11 -arch arm64 -miphoneos-version-min=16.0 -fsyntax-only ios/Portability/Probe.c
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios
+          xcodegen generate
+
+      - name: Build unsigned iOS Simulator app
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/SSBURecompIOS.xcodeproj \
+            -scheme SSBURecompIOS \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/ssbu-ios-derived" \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Upload simulator-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssbu-recomp-ios-bootstrap-simulator
+          path: ${{ runner.temp }}/ssbu-ios-derived/Build/Products/Debug-iphonesimulator/SSBURecompIOS.app
+          if-no-files-found: error

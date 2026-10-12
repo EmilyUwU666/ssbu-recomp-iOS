@@ -72,6 +72,14 @@ The existing Windows port in this fork is kept intact.
   using the real runtime.h ABI. Both use symbol index zero for different imports;
   a callback into the caller verifies scope restoration and cross-arena writes.
   The ELF import test now also uses the actual `call_indirect` wrapper.
+- A **private module metadata preparer**: reads bounded ELF load/dynamic/symbol
+  tables, preserves module-local symbol indices, converts upstream lifted
+  function-table VAs to checked module offsets, and emits uniquely named static
+  function/export/symbol descriptors plus an ELF-hash report.
+- The AOT compiler can replace the original generated `table.c`/`imports.c`
+  with prepared metadata and compile each module into a separate archive.
+  CI tests two original synthetic module archives with a real host-runtime call,
+  then cross-compiles both archives for iOS ARM64.
 - A host CLI smoke test, host ThreadSanitizer CI check and ARM64 iOS syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -309,3 +317,78 @@ exception/non-local unwinding and production thread scheduling remain unfinished
 Generated sources must use these external ABI wrappers and module-unique tables;
 standalone generated dispatch definitions cannot be linked unchanged alongside
 this bridge. Only original synthetic fixtures have been compiled and executed.
+
+## Prepare local generated modules (Windows/Linux/macOS; Python 3.10+)
+
+The preparer can use a locally converted ELF and the existing lifter's `table.c`.
+It does not extract a title, lift instructions, or run the ELF. Keep derived inputs
+and outputs outside tracked source folders (for example under ignored `build/`).
+
+```sh
+python3 ios/scripts/prepare_module.py \
+  --elf /private/main.elf \
+  --functions /private/gen-main/table.c \
+  --module main --name main \
+  --load-bias 0x7100000000 \
+  --function-addresses guest \
+  --output /private/build/main_metadata.c
+```
+
+Select `--function-addresses guest` when table entries are absolute guest VAs
+(as in the upstream main lifter), or `offset` for module-local ELF VAs. For a
+named NRO-style table, pass `--function-table fn_table_MODULENAME`. The load bias
+must match addresses embedded in the lifted functions; this tool adjusts metadata
+only, not hardcoded PCs or pointer constants in generated code. `--module` is a
+unique C identifier for output names; `--name` is the exact registry/dependency
+name, including any name expected by another ELF's `DT_NEEDED`.
+
+The C output defines `ssbu_main_module` and `ssbu_main_module_symbols` (with the
+chosen module ID replacing `main`). It provides its own checked function table,
+symbol table in the ELF's original index order, and byte-sorted export names.
+The adjacent JSON report records source ELF SHA-256, bias/arena extent, counts,
+dependency names and descriptor symbols. On validation failure, existing output
+files remain untouched. C strings use fixed-width byte escapes, preserving raw
+symbol names without allowing names to inject C tokens.
+
+On a Mac with Xcode, compile the lifted function sources with this metadata:
+
+```sh
+python3 ios/scripts/compile_generated.py \
+  --generated /private/gen-main \
+  --metadata /private/build/main_metadata.c \
+  --output /private/build/main-arm64 --jobs 4
+```
+
+Repeat for SDK/other modules with distinct metadata and output directories. With
+`--metadata`, the compiler omits the input folder's `table.c` and `imports.c`;
+`--exclude-source filename.c` omits additional flat source files if needed. It
+includes the portable metadata headers, compiles the replacement separately,
+and adds only the selected objects to that module's archive. Wire descriptors
+into `ssbu_ios_modules_init` and their symbol descriptors into
+`ssbu_ios_runtime_create` when integrating the signed app's build.
+
+This remains a partial archive pipeline. It does not implement NSO/NRO conversion,
+SDK host services, app asset loading, exception/resume tables, native module
+initializers or a complete executable link. Removing the old table file also
+removes any exception/resume metadata it contained; that metadata needs a future
+compatible unwinding path. Standalone generated dispatchers/NRO import adapters
+must be adapted separately. No real Smash-generated code has been compiled here.
+
+The preparer currently requires a SysV hash and the restricted symbol types/
+bindings understood by the runtime. It rejects special/absolute symbols,
+unnamed non-null symbols, unsupported PCS/versioning/packed relocation models,
+malformed tables, out-of-range definitions and function entries outside text.
+The stricter rejection can expose actual-module compatibility work; it should
+not be treated as proof of supporting every Smash main/SDK/fighter module.
+
+Run the original pipeline checks with:
+
+```sh
+python3 ios/tests/test_prepare_module.py
+```
+
+They prepare two ELF/lifted-code modules, compile separate host archives, and
+link/invoke them through the actual portable runtime. CI additionally invokes
+the real iOS archive compiler with prepared metadata; original input tables are
+intentionally non-compilable to verify replacement/exclusion. Malformed inputs
+and C-unsafe names/table syntax are tested without game content.

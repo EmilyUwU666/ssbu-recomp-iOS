@@ -29,6 +29,10 @@ def parse_args() -> argparse.Namespace:
                    help="Private output directory for .o and archive files")
     p.add_argument("--jobs", type=int, default=4,
                    help="Maximum simultaneous clang processes")
+    p.add_argument("--metadata", type=Path,
+                   help="Private .c from prepare_module.py; replaces table.c/imports.c")
+    p.add_argument("--exclude-source", action="append", default=[],
+                   help="Additional flat .c filename to exclude from this archive")
     return p.parse_args()
 
 
@@ -40,14 +44,27 @@ def main() -> int:
     generated = args.generated.resolve()
     out = args.output.resolve()
     sources = sorted(generated.glob("*.c"))
+    excluded = set(args.exclude_source)
+    if any(Path(name).name != name or not name.endswith('.c') for name in excluded):
+        raise ValueError("--exclude-source must name a flat .c filename")
+    if args.metadata:
+        excluded.update({'table.c', 'imports.c'})
+    sources = [s for s in sources if s.name not in excluded]
     if not sources:
         raise FileNotFoundError(f"No generated .c files found under {generated}")
+    metadata = args.metadata.resolve() if args.metadata else None
+    if metadata:
+        if metadata.suffix != '.c' or not metadata.is_file() or metadata in sources:
+            raise ValueError("--metadata must be a distinct, existing .c file")
+        sources.append(metadata)
 
     obj_dir = out / "objects"
     obj_dir.mkdir(parents=True, exist_ok=True)
     runtime = REPO / "runtime"
     headers = [*generated.glob("*.h"), runtime / "runtime.h",
                runtime / "neon.h", runtime / "fpexact.h"]
+    if metadata:
+        headers += list((REPO / 'ios' / 'Portability').glob('*.h'))
     latest_headers = max((p.stat().st_mtime for p in headers), default=0.0)
 
     common = [
@@ -56,10 +73,16 @@ def main() -> int:
         "-std=gnu11", "-O0", "-w", "-fno-strict-aliasing",
         "-DSSBU_GUEST_ADDRESS_TRANSLATION=1",
         "-I", str(runtime), "-I", str(generated),
+        "-I", str(REPO / 'ios' / 'Portability'),
     ]
 
+    object_names = {src: ("_ssbu_module_metadata.o" if src == metadata else src.stem + ".o")
+                    for src in sources}
+    if len(set(object_names.values())) != len(sources):
+        raise ValueError("Generated source name conflicts with metadata object name")
+
     def compile_one(src: Path) -> Path:
-        obj = obj_dir / (src.stem + ".o")
+        obj = obj_dir / object_names[src]
         if not obj.exists() or obj.stat().st_mtime < max(src.stat().st_mtime, latest_headers):
             # Same source basename must be unique (upstream gen output is flat).
             command(common + [str(src), "-o", str(obj)])

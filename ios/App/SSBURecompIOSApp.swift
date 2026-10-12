@@ -10,7 +10,7 @@ struct SSBURecompIOSApp: App {
 }
 
 private struct PortStatusView: View {
-    private let failures = Int(ssbu_portability_selftest()) | Int(ssbu_guest_memory_selftest())
+    private let failures = Int(ssbu_portability_selftest()) | Int(ssbu_guest_memory_selftest()) | Int(ssbu_translated_memory_selftest())
 
     var body: some View {
         NavigationStack {
@@ -30,13 +30,23 @@ private struct PortStatusView: View {
                     .foregroundStyle(failures == 0 ? .green : .red)
                     .font(.headline)
 
-                    Text("This app is an early engineering scaffold. It tests portable C helpers from the upstream recompilation runtime and an experimental relocatable guest-memory mapping. It does not load or run Super Smash Bros. Ultimate.")
+                    MetalBootstrapSurface()
+                        .frame(height: 170)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .overlay(alignment: .bottomLeading) {
+                            Text("Metal display test · no game graphics")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(12)
+                        }
+
+                    Text("This app tests portable C helpers, address translation for the recompiler's memory accessors, and a native Metal presentation surface. It does not load or run Super Smash Bros. Ultimate.")
                         .fixedSize(horizontal: false, vertical: true)
 
                     Divider()
 
                     Text("Remaining porting work").font(.headline)
-                    Text("Guest memory mapping, a static game-code link, module loading, Metal/MoltenVK rendering, audio/video, file services, and input integration.")
+                    Text("Full guest memory integration, static game-code linking, module loading, NVN-to-Metal/Vulkan graphics, audio/video, file services, and input remain to be implemented.")
                         .foregroundStyle(.secondary)
 
                     Text("No game files, firmware, or keys are included.")

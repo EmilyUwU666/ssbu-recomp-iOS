@@ -1,4 +1,4 @@
-# iOS / iPadOS static-recompilation port — checkpoint 0
+# iOS / iPadOS static-recompilation port — checkpoints 0–1
 
 Status: **bootstrap only, no gameplay, no IPA, and no signed device build.**
 The existing Windows port in this fork is kept intact.
@@ -9,8 +9,15 @@ The existing Windows port in this fork is kept intact.
 - A C portability probe that includes the **real upstream** `runtime/runtime.h`
   and verifies guest context layout, memory accessors, bit operations,
   SIMD helpers, signed arithmetic, and conversions.
-- An isolated, relocatable guest-memory experiment with bounds checks. The upstream
-  game runtime is **not yet wired to this mapping**, and still dereferences fixed addresses.
+- An isolated, relocatable guest-memory experiment with bounds checks.
+- An **opt-in** address translation hook in `runtime/runtime.h`. The C accessors
+  `rd8/16/32/64`, `wr8/16/32/64`, `rdv/wrv`, and `stx8/16/32/64`
+  now translate guest addresses when compiled with
+  `SSBU_GUEST_ADDRESS_TRANSLATION`. Without this define, Windows stays unchanged.
+- Synthetic tests of the real `rd/wr/rdv/wrv` helpers against a guest-memory
+  mapping. This does **not** make other upstream host/runtime pointer casts safe.
+- A native Metal presentation/clear pass in the iOS bootstrap app. No NVN
+  graphics commands or in-game imagery are rendered yet.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -37,7 +44,9 @@ xcodebuild -project SSBURecompIOS.xcodeproj -scheme SSBURecompIOS \
 On macOS, the C-only probe can also run without XcodeGen:
 
 ```sh
-clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/ProbeCli.c -o /tmp/ssbu-probe
+clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/GuestMemory.c \
+  ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c \
+  ios/Portability/ProbeCli.c -o /tmp/ssbu-probe
 /tmp/ssbu-probe
 ```
 
@@ -68,14 +77,21 @@ clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Por
 
 ## Planned verified checkpoints
 
-- **0 — Current**: Xcode bootstrap, shared C helper checks, simulator build.
-- **1 — Prototype started**: portable platform abstraction for guest memory and file paths;
+- **0 — Verified**: Xcode bootstrap, shared C helper checks, simulator and device ARM64 compilation.
+- **1 — In progress**: portable memory translation hooked into typed generated-code helpers;
   tests with generated synthetic guest data (not game code).
 - **2**: AOT game + module linking from an owner's local dump with reproducible
   device-build tooling; resolve symbols, unwind support, and loading.
-- **3**: implement iOS rendering and present a reproducible frame.
+- **3 — Presentation prototype only**: render a static Metal clear pass;
+  next implement NVN drawing and test real, reproducible game frames.
 - **4**: game startup, input, audio, videos, save paths, and playable tests.
 - **5**: performance evaluation, packaging, and optional device distribution.
+
+The opt-in memory accessor path is **incomplete**: direct guest pointer casts,
+Win32 virtual mappings, cross-module pointers, unwinding, guest SDK calls, and
+guest/memory lifetime management are outside its scope. The current bridge
+terminates on an invalid translated access rather than dereferencing host
+address 0, and the prototype binder must be unbound before memory is freed.
 
 All claims should be backed by build logs or device captures. In particular,
 successfully compiling one runtime header must not be described as compiling

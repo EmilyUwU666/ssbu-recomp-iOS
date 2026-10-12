@@ -81,7 +81,7 @@ The existing Windows port in this fork is kept intact.
   CI tests two original synthetic module archives with a real host-runtime call,
   then cross-compiles both archives for iOS ARM64.
 - An optional original static **host-service provider** for checked memcpy,
-  memmove, memset, memcmp and memchr, plus nn::os tick/frequency/conversion,
+  memmove, memset, memcmp and memchr, eight checked string functions, plus nn::os tick/frequency/conversion,
   sleep and yield imports. The provider uses reserved guest function addresses
   and the same runtime import scopes; native data pointers are never returned.
 - Explicit iOS fatal diagnostics for generated guest traps, untranslated
@@ -432,13 +432,26 @@ Memcpy overlap is rejected, memmove supports it, zero-byte operations do not
 access pointers, and memchr returns a guest VA. Invalid checked arguments leave
 memory/registers unchanged; the generated void adapter aborts with a diagnostic.
 
+String imports include strlen, strnlen, strcmp, strncmp, strcpy, strncpy, strchr
+and strrchr. Scans stay within one bound arena, even if another arena is adjacent.
+Unbounded scans must reach a NUL or an earlier valid result (a comparison
+difference or first strchr match); bounded reads can stop at count or NUL without
+requiring the unused suffix to be mapped. Comparisons use unsigned bytes.
+Copies validate all required source/destination bytes and reject overlap before
+writing. Strncpy copies exactly count bytes, padding after a NUL, and need not
+terminate a truncated result. Zero-count bounded calls do not access pointers;
+searches return guest VAs, including the terminator when searching for NUL.
+The checked span API exposes only the remainder of one arena with a borrowed
+binding lifetime. Callers must synchronize concurrent changes to string memory;
+the validation/write sequence is not a transaction against other workers.
+
 Tick frequency matches upstream's 19,200,000 Hz. Tick reads use host
 CLOCK_MONOTONIC; integer signed conversions truncate toward zero and reject
 unrepresentable results. Sleep uses nanosleep with remaining-time retries after
 EINTR; nonpositive durations and YieldThread use the host scheduler's yield.
 Void sleep/yield calls preserve registers. This is a host timing implementation,
 not the console's affinity/priority, suspend/resume, deterministic-clock or
-thread scheduling model. No random, heap allocation, string, file or full
+thread scheduling model. No random, heap allocation, file or full
 synchronization services are included yet.
 
 Registry export collisions remain errors by default, including when an actual

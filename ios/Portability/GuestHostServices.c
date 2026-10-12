@@ -23,8 +23,67 @@ static int convert_signed(uint64_t input, int to_tick, uint64_t *out) {
     *out = unsigned_bits((int64_t)value); return 0;
 }
 
+static int string_service(SSBUIOSHostService service, Ctx *c) {
+    uint64_t a_va = c->x[0], b_va = c->x[1];
+    uint64_t limit = service == SSBU_HOST_STRNLEN ? c->x[1] : c->x[2];
+    int bounded = service == SSBU_HOST_STRNLEN || service == SSBU_HOST_STRNCMP ||
+                  service == SSBU_HOST_STRNCPY;
+    if (bounded && limit > SIZE_MAX) return -1;
+    if (bounded && !limit) {
+        if (service != SSBU_HOST_STRNCPY) c->x[0] = 0;
+        return 0;
+    }
+    unsigned char *a, *b;
+    size_t available, other;
+    /* Copies scan the source first, then validate their complete destination. */
+    uint64_t scan_va = service == SSBU_HOST_STRCPY || service == SSBU_HOST_STRNCPY ? b_va : a_va;
+    if (ssbu_guest_bound_span(scan_va, &a, &available)) return -1;
+    if (service == SSBU_HOST_STRCMP || service == SSBU_HOST_STRNCMP) {
+        if (ssbu_guest_bound_span(b_va, &b, &other)) return -1;
+        size_t count = available < other ? available : other;
+        if (bounded && limit < count) count = (size_t)limit;
+        for (size_t i = 0; i < count; ++i) {
+            if (a[i] != b[i] || !a[i]) {
+                c->x[0] = unsigned_bits((int64_t)a[i] - b[i]); return 0;
+            }
+        }
+        if (bounded && count == limit) { c->x[0] = 0; return 0; }
+        return -1;
+    }
+    if (service == SSBU_HOST_STRCHR || service == SSBU_HOST_STRRCHR) {
+        uint64_t found = 0;
+        for (size_t i = 0; i < available; ++i) {
+            if (a[i] == (unsigned char)b_va) {
+                found = a_va + i;
+                if (service == SSBU_HOST_STRCHR) { c->x[0] = found; return 0; }
+            }
+            if (!a[i]) { c->x[0] = found; return 0; }
+        }
+        return -1;
+    }
+    size_t scan = available;
+    if (bounded && limit < scan) scan = (size_t)limit;
+    unsigned char *end = memchr(a, 0, scan);
+    if (!end && (!bounded || scan < limit)) return -1;
+    size_t length = end ? (size_t)(end - a) : scan;
+    if (service == SSBU_HOST_STRLEN || service == SSBU_HOST_STRNLEN) {
+        c->x[0] = length; return 0;
+    }
+    size_t read_count = length + (end != NULL);
+    size_t write_count = service == SSBU_HOST_STRNCPY ? (size_t)limit : read_count;
+    b = ssbu_guest_bound_pointer(a_va, write_count);
+    if (!b) return -1;
+    /* Both intervals were validated; their additions cannot overflow. */
+    if (a_va < b_va + read_count && b_va < a_va + write_count) return -1;
+    memcpy(b, a, read_count);
+    if (write_count > read_count) memset(b + read_count, 0, write_count - read_count);
+    return 0;
+}
+
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *c) {
     if (!c) return -1;
+    if (service >= SSBU_HOST_STRLEN && service <= SSBU_HOST_STRRCHR)
+        return string_service(service, c);
     if (service >= SSBU_HOST_MEMCPY && service <= SSBU_HOST_MEMCHR) {
         uint64_t count = c->x[2];
         if (count > SIZE_MAX) return -1;
@@ -103,11 +162,21 @@ ADAPTER(h_ns_to_tick, SSBU_HOST_NS_TO_TICK)
 ADAPTER(h_tick_to_ns, SSBU_HOST_TICK_TO_NS)
 ADAPTER(h_sleep, SSBU_HOST_SLEEP)
 ADAPTER(h_yield, SSBU_HOST_YIELD)
+ADAPTER(h_strlen, SSBU_HOST_STRLEN)
+ADAPTER(h_strnlen, SSBU_HOST_STRNLEN)
+ADAPTER(h_strcmp, SSBU_HOST_STRCMP)
+ADAPTER(h_strncmp, SSBU_HOST_STRNCMP)
+ADAPTER(h_strcpy, SSBU_HOST_STRCPY)
+ADAPTER(h_strncpy, SSBU_HOST_STRNCPY)
+ADAPTER(h_strchr, SSBU_HOST_STRCHR)
+ADAPTER(h_strrchr, SSBU_HOST_STRRCHR)
 
 static const FnEntry functions[] = {
     {0x100, h_memcpy}, {0x110, h_memmove}, {0x120, h_memset}, {0x130, h_memcmp},
     {0x140, h_memchr}, {0x150, h_tick}, {0x160, h_frequency}, {0x170, h_ns_to_tick},
-    {0x180, h_tick_to_ns}, {0x190, h_sleep}, {0x1a0, h_yield}
+    {0x180, h_tick_to_ns}, {0x190, h_sleep}, {0x1a0, h_yield},
+    {0x1b0, h_strlen}, {0x1c0, h_strnlen}, {0x1d0, h_strcmp}, {0x1e0, h_strncmp},
+    {0x1f0, h_strcpy}, {0x200, h_strncpy}, {0x210, h_strchr}, {0x220, h_strrchr}
 };
 /* Exact upstream nn::os import names, byte-sorted for registry lookup. */
 static const SSBUIOSGuestExport exports[] = {
@@ -118,7 +187,9 @@ static const SSBUIOSGuestExport exports[] = {
     {"_ZN2nn2os17ConvertToTimeSpanENS0_4TickE", 0x180},
     {"_ZN2nn2os22GetSystemTickFrequencyEv", 0x160},
     {"memchr", 0x140}, {"memcmp", 0x130}, {"memcpy", 0x100},
-    {"memmove", 0x110}, {"memset", 0x120}
+    {"memmove", 0x110}, {"memset", 0x120},
+    {"strchr", 0x210}, {"strcmp", 0x1d0}, {"strcpy", 0x1f0}, {"strlen", 0x1b0},
+    {"strncmp", 0x1e0}, {"strncpy", 0x200}, {"strnlen", 0x1c0}, {"strrchr", 0x220}
 };
 const SSBUIOSGuestModule ssbu_ios_host_services_module = {
     "ios-host-services", SSBU_IOS_HOST_SERVICES_BASE, SSBU_IOS_HOST_SERVICES_BASE,

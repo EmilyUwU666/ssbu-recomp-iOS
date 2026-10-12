@@ -29,4 +29,8 @@ int ssbu_guest_address_space_close(SSBUIOSGuestAddressSpace **space);
  * NULL for a bad address; runtime's host_pointer wrapper remains fail-fast. */
 void *ssbu_guest_bound_pointer(uint64_t guest_address, size_t length);
 
+/* Nonempty remainder of a single bound arena, with the same borrowed lifetime.
+ * Rejects one-past-end and leaves outputs unchanged on failure. */
+int ssbu_guest_bound_span(uint64_t address, unsigned char **host, size_t *length);
+
 #endif

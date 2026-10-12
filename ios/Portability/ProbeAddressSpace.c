@@ -2,6 +2,7 @@
 #define SSBU_GUEST_ADDRESS_TRANSLATION 1
 #include "../../runtime/runtime.h"
 #include "GuestAddressSpace.h"
+#include "GuestHostServices.h"
 #include "Probe.h"
 
 #include <pthread.h>
@@ -127,6 +128,14 @@ int ssbu_guest_address_space_selftest(void) {
     CHECK(ssbu_guest_address_space_create(&space, arenas, 2) == 0);
     CHECK(ssbu_guest_address_space_bind(space) == 0);
     CHECK(ssbu_guest_bound_pointer(BASE + 4092, 8) == NULL);
+    unsigned char *span;
+    size_t remaining;
+    CHECK(ssbu_guest_bound_span(BASE + 4095, &span, &remaining) == 0 && remaining == 1);
+    wr8(BASE + 4095, 'x');
+    Ctx string_context = {0}; string_context.x[0] = BASE + 4095;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRLEN, &string_context) == -1 &&
+          string_context.x[0] == BASE + 4095);
+    CHECK(ssbu_guest_bound_span(BASE + 4096, &span, &remaining) == 0 && remaining == 4096);
     wr32(BASE + 4096, 99);
     CHECK(rd32(BASE + 4096) == 99);
     ssbu_guest_memory_unbind();
@@ -134,6 +143,7 @@ int ssbu_guest_address_space_selftest(void) {
     /* Legacy borrowed single mapping also refuses implicit replacement. */
     CHECK(ssbu_guest_memory_open(&arenas[0], BASE, 4096) == 0);
     CHECK(ssbu_guest_memory_bind(&arenas[0]) == 0);
+    CHECK(ssbu_guest_bound_span(BASE + 4095, &span, &remaining) == 0 && remaining == 1);
     CHECK(ssbu_guest_memory_bind(&arenas[0]) == -1);
 done:
     ssbu_guest_memory_unbind();

@@ -126,12 +126,12 @@ void ssbu_guest_memory_unbind(void) {
     if (!pthread_setspecific(binding_key, NULL)) release_binding(binding);
 }
 
-void *ssbu_guest_bound_pointer(uint64_t address, size_t length) {
+static const SSBUIOSGuestMemory *bound_region(uint64_t address) {
     if (key_ready()) return NULL;
     const ThreadBinding *binding = pthread_getspecific(binding_key);
     if (!binding) return NULL;
     if (!binding->space)
-        return ssbu_guest_memory_translate(&binding->borrowed, address, length);
+        return &binding->borrowed;
     const SSBUIOSGuestAddressSpace *space = binding->space;
     /* Immutable table, pinned by this thread; find last region start <= VA. */
     size_t low = 0, high = space->count;
@@ -141,7 +141,21 @@ void *ssbu_guest_bound_pointer(uint64_t address, size_t length) {
         else high = mid;
     }
     if (!low) return NULL;
-    return ssbu_guest_memory_translate(&space->regions[low-1], address, length);
+    return &space->regions[low-1];
+}
+
+void *ssbu_guest_bound_pointer(uint64_t address, size_t length) {
+    return ssbu_guest_memory_translate(bound_region(address), address, length);
+}
+
+int ssbu_guest_bound_span(uint64_t address, unsigned char **host, size_t *length) {
+    if (!host || !length) return -1;
+    const SSBUIOSGuestMemory *region = bound_region(address);
+    unsigned char *pointer = ssbu_guest_memory_translate(region, address, 1);
+    if (!pointer) return -1;
+    *host = pointer;
+    *length = region->length - (size_t)(address - region->guest_base);
+    return 0;
 }
 
 void *ssbu_guest_host_pointer(uint64_t address, size_t length) {

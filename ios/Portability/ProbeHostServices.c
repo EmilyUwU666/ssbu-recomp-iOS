@@ -22,6 +22,9 @@ static void caller(Ctx *c) {
     host_import(c, 1); c->x[5] = c->x[0];
     c->x[30] = BASE + 0x110;
     host_import(c, 2); c->x[6] = c->x[0];
+    c->x[0] = DATA + 256;
+    c->x[30] = BASE + 0x114;
+    host_import(c, 3); c->x[7] = c->x[0];
     c->x[30] = lr;
 }
 
@@ -41,10 +44,10 @@ int ssbu_guest_host_services_selftest(void) {
     };
     const DynSym imports[] = {
         {"memcpy", 0, 0}, {"_ZN2nn2os22GetSystemTickFrequencyEv", 0, 0},
-        {"_ZN2nn2os13GetSystemTickEv", 0, 0}
+        {"_ZN2nn2os13GetSystemTickEv", 0, 0}, {"strlen", 0, 0}
     };
     SSBUIOSModuleSymbols tables[] = {
-        {"host-caller", imports, 3, NULL}, ssbu_ios_host_services_symbols
+        {"host-caller", imports, 4, NULL}, ssbu_ios_host_services_symbols
     };
     SSBUIOSModuleRegistry registry = {0};
     unsigned char original[32];
@@ -57,11 +60,13 @@ int ssbu_guest_host_services_selftest(void) {
     CHECK(ssbu_guest_memory_write(&arenas[0], BASE + 64, original, sizeof original) == 0);
     CHECK(ssbu_guest_address_space_create(&space, arenas, 2) == 0);
     CHECK(ssbu_guest_address_space_bind(space) == 0 && ssbu_ios_runtime_bind(runtime) == 0);
+    memcpy(ssbu_guest_bound_pointer(DATA + 256, 5), "abba", 5);
     Ctx c = {0};
     c.x[0] = DATA + 64; c.x[1] = BASE + 64; c.x[2] = 16;
     c.x[30] = BASE + 0x900; c.in_import = "service-outer"; c.import_from = 42;
     CHECK(ssbu_ios_runtime_call(&c, BASE + 0x100) == 0);
     CHECK(c.x[4] == DATA + 64 && c.x[5] == SSBU_IOS_TICK_HZ && c.x[6] > 0);
+    CHECK(c.x[7] == 4);
     CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 64, 16), original, 16));
     CHECK(!strcmp(c.in_import, "service-outer") && c.import_from == 42 && c.x[30] == BASE + 0x900);
 
@@ -102,6 +107,61 @@ int ssbu_guest_host_services_selftest(void) {
     CHECK(ssbu_ios_host_service(SSBU_HOST_MEMCMP, &c) == 0 && c.x[0] == 0);
     CHECK(unchanged_error((SSBUIOSHostService)99, &c));
     CHECK(ssbu_ios_host_service(SSBU_HOST_MEMSET, NULL) == -1);
+
+    /* Strings at the last byte, unsigned comparisons, bounded early stops,
+     * zero-count invalid addresses, copy padding, and atomic rejection. */
+    wr8(BASE + 4095, 'z');
+    c.x[0] = BASE + 4095;
+    CHECK(unchanged_error(SSBU_HOST_STRLEN, &c));
+    c.x[1] = 1;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNLEN, &c) == 0 && c.x[0] == 1);
+    c.x[0] = BASE + 4095; c.x[1] = 2;
+    CHECK(unchanged_error(SSBU_HOST_STRNLEN, &c));
+    c.x[0] = DATA + 256; c.x[1] = UINT64_MAX;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNLEN, &c) == 0 && c.x[0] == 4);
+    c.x[0] = DATA + 256; c.x[1] = 'b';
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRCHR, &c) == 0 && c.x[0] == DATA + 257);
+    c.x[0] = DATA + 256;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRRCHR, &c) == 0 && c.x[0] == DATA + 258);
+    c.x[0] = DATA + 256; c.x[1] = 0;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRRCHR, &c) == 0 && c.x[0] == DATA + 260);
+    c.x[0] = DATA + 256; c.x[1] = 'x';
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRCHR, &c) == 0 && c.x[0] == 0);
+    c.x[0] = DATA + 300; c.x[1] = DATA + 256;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRCPY, &c) == 0 && c.x[0] == DATA + 300);
+    c.x[1] = DATA + 256;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRCMP, &c) == 0 && c.x[0] == 0);
+    wr8(DATA + 4095, 0xff);
+    c.x[0] = BASE + 4095; c.x[1] = DATA + 4095;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRCMP, &c) == 0 && c.x[0] > INT64_MAX);
+    wr8(DATA + 4095, 'z');
+    c.x[0] = BASE + 4095; c.x[2] = 1;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCMP, &c) == 0 && c.x[0] == 0);
+    c.x[0] = BASE + 4095; c.x[2] = 2;
+    CHECK(unchanged_error(SSBU_HOST_STRNCMP, &c));
+    c.x[0] = DATA + 320; c.x[1] = DATA + 256; c.x[2] = 8;
+    memset(ssbu_guest_bound_pointer(DATA + 320, 8), 0xff, 8);
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCPY, &c) == 0 && c.x[0] == DATA + 320);
+    CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 320, 8), "abba\0\0\0", 8));
+    c.x[0] = DATA + 340; c.x[1] = BASE + 4095; c.x[2] = 1;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCPY, &c) == 0 && rd8(DATA + 340) == 'z');
+    c.x[0] = DATA + 257; c.x[1] = DATA + 256;
+    CHECK(unchanged_error(SSBU_HOST_STRCPY, &c));
+    CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 256, 5), "abba", 5));
+    c.x[0] = DATA + 4095; c.x[1] = DATA + 256;
+    CHECK(unchanged_error(SSBU_HOST_STRCPY, &c) && rd8(DATA + 4095) == 'z');
+    c.x[0] = DATA + 340; c.x[1] = BASE + 4095; c.x[2] = 2;
+    CHECK(unchanged_error(SSBU_HOST_STRNCPY, &c) && rd8(DATA + 340) == 'z');
+    c.x[0] = UINT64_MAX; c.x[1] = UINT64_MAX; c.x[2] = 0;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCPY, &c) == 0 && c.x[0] == UINT64_MAX);
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCMP, &c) == 0 && c.x[0] == 0);
+    c.x[0] = UINT64_MAX; c.x[1] = 0;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNLEN, &c) == 0 && c.x[0] == 0);
+    unsigned char *span = (unsigned char *)(uintptr_t)1;
+    size_t span_length = 123;
+    CHECK(ssbu_guest_bound_span(BASE + 4096, &span, &span_length) == -1 &&
+          span == (unsigned char *)(uintptr_t)1 && span_length == 123);
+    CHECK(ssbu_guest_bound_span(BASE + 4095, &span, &span_length) == 0 && span_length == 1);
 
     /* Exact signed conversions, including truncation toward zero. */
     c.x[0] = 1000000000;

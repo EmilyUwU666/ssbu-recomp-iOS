@@ -8,7 +8,9 @@ typedef enum {
     SSBU_HOST_MEMCPY, SSBU_HOST_MEMMOVE, SSBU_HOST_MEMSET,
     SSBU_HOST_MEMCMP, SSBU_HOST_MEMCHR, SSBU_HOST_GET_TICK,
     SSBU_HOST_TICK_FREQUENCY, SSBU_HOST_NS_TO_TICK, SSBU_HOST_TICK_TO_NS,
-    SSBU_HOST_SLEEP, SSBU_HOST_YIELD
+    SSBU_HOST_SLEEP, SSBU_HOST_YIELD,
+    SSBU_HOST_STRLEN, SSBU_HOST_STRNLEN, SSBU_HOST_STRCMP, SSBU_HOST_STRNCMP,
+    SSBU_HOST_STRCPY, SSBU_HOST_STRNCPY, SSBU_HOST_STRCHR, SSBU_HOST_STRRCHR
 } SSBUIOSHostService;
 
 /* Checked Ctx service ABI. Invalid pointers, unsupported IDs or conversion
@@ -16,6 +18,9 @@ typedef enum {
  * ranges must fit their bound arenas; memcpy overlap is rejected.
  * Zero-byte calls do not dereference pointers. Sleep/yield preserve registers.
  * Timing uses host monotonic time, not a full console clock/scheduler model.
+ * Strings never cross an arena. Bounded reads stop at NUL/count; comparisons
+ * stop at the first differing byte. Copies validate before writing and reject
+ * overlap. Callers must synchronize concurrent guest-memory modifications.
  */
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *context);
 

@@ -34,7 +34,10 @@ The existing Windows port in this fork is kept intact.
   headers, copies `PT_LOAD` data, zero-initializes BSS, inspects `PT_DYNAMIC`
   for `DT_RELA`, and applies supported relative relocations to a private
   guest-memory arena. Malformed inputs do not publish a partially loaded image.
-  This is not a complete game/NSO/NRO loader and does not execute ELF code.
+  In a synthetic end-to-end test, its entry address resolves via the
+  statically linked guest dispatcher and updates relocated guest memory
+  using the AOT-compiled C fixture. It does not execute the ELF's native
+  machine code, and is not a complete game/NSO/NRO loader.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -58,12 +61,16 @@ xcodebuild -project SSBURecompIOS.xcodeproj -scheme SSBURecompIOS \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-On macOS, the C-only probe can also run without XcodeGen:
+On macOS, the synthetic C tests can also run without XcodeGen:
 
 ```sh
-clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/GuestMemory.c \
-  ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c \
-  ios/Portability/ProbeCli.c -o /tmp/ssbu-probe
+clang -std=c11 -O2 -I runtime \
+  ios/Portability/Probe.c ios/Portability/GuestMemory.c \
+  ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c \
+  ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c \
+  ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c \
+  ios/tests/aot_fixture/synthetic_game.c ios/Portability/ProbeCli.c \
+  -o /tmp/ssbu-probe
 /tmp/ssbu-probe
 ```
 

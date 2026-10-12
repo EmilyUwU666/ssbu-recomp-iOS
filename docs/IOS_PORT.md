@@ -80,7 +80,15 @@ The existing Windows port in this fork is kept intact.
   with prepared metadata and compile each module into a separate archive.
   CI tests two original synthetic module archives with a real host-runtime call,
   then cross-compiles both archives for iOS ARM64.
-- A host CLI smoke test, host ThreadSanitizer CI check and ARM64 iOS syntax check.
+- An optional original static **host-service provider** for checked memcpy,
+  memmove, memset, memcmp and memchr, plus nn::os tick/frequency/conversion,
+  sleep and yield imports. The provider uses reserved guest function addresses
+  and the same runtime import scopes; native data pointers are never returned.
+- Explicit iOS fatal diagnostics for generated guest traps, untranslated
+  instructions and unsupported direct kernel SVC. Host subprocess tests verify
+  these terminate; no exception/kernel behavior is fabricated.
+- A host CLI smoke test, fatal-diagnostic checks, host ThreadSanitizer CI check
+  and ARM64 iOS syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
   an **unsigned iOS ARM64 device app**.
@@ -113,7 +121,8 @@ clang -std=c11 -pthread -O2 -I runtime \
   ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c \
   ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c \
   ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c \
-  ios/Portability/ProbeGuestRuntime.c \
+  ios/Portability/ProbeGuestRuntime.c ios/Portability/GuestHostServices.c \
+  ios/Portability/GuestDiagnostics.c ios/Portability/ProbeHostServices.c \
   ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c \
   ios/tests/aot_fixture/synthetic_runtime_main.c \
   ios/tests/aot_fixture/synthetic_runtime_sdk.c \
@@ -279,7 +288,7 @@ same guest VA, non-inheritance, active-pin teardown refusal, thread-exit cleanup
 and guest/host overlap, holes and boundary rejection. Local host tests also
 pass AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer. LeakSanitizer
 is disabled locally due to restricted /proc task inspection. No real game code,
-NSO/NRO module ingestion or Win32 service integration has been validated.
+NSO/NRO module ingestion or complete SDK/Win32 service integration has been validated.
 
 ## Generated call and import scopes
 
@@ -312,8 +321,10 @@ final destruction and join workers, as for address spaces.
 Limitations: `DynSym` exposes only name/value/defined, so runtime table definitions
 must supply module-relative symbol values; it does not preserve SHN_ABS,
 weak/type/version metadata. ELF relocation metadata remains separately checked.
-A missing weak function is not callable. Host service handlers, guest traps/SVC,
-exception/non-local unwinding and production thread scheduling remain unfinished.
+A missing weak function is not callable. The optional memory/timing provider is
+available and generated trap/SVC symbols now stop with diagnostics. Most SDK
+services, actual kernel SVC, exception/non-local unwinding and production thread
+scheduling remain unfinished.
 Generated sources must use these external ABI wrappers and module-unique tables;
 standalone generated dispatch definitions cannot be linked unchanged alongside
 this bridge. Only original synthetic fixtures have been compiled and executed.
@@ -392,3 +403,42 @@ link/invoke them through the actual portable runtime. CI additionally invokes
 the real iOS archive compiler with prepared metadata; original input tables are
 intentionally non-compilable to verify replacement/exclusion. Malformed inputs
 and C-unsafe names/table syntax are tested without game content.
+
+## Optional portable memory and timing imports
+
+Include `ssbu_ios_host_services_module` alongside the prepared guest modules
+and `ssbu_ios_host_services_symbols` alongside their runtime symbol descriptors.
+This provider defines statically linked Ctx handlers at reserved guest VAs
+starting at `SSBU_IOS_HOST_SERVICES_BASE`. It needs no guest data arena of its
+own. Exact C/nn::os import names resolve through the same export registry and
+can therefore be placed in ELF import relocation slots and invoked through
+`host_import`/`call_indirect`. Host function/data pointers are never guest values.
+
+The supported imports are memcpy, memmove, memset, memcmp and memchr, plus
+nn::os GetSystemTick, GetSystemTickFrequency, ConvertToTick, ConvertToTimeSpan,
+SleepThread and YieldThread. Checked memory services validate complete source
+and destination ranges before accessing memory. Nonzero accesses must fit
+single bound arenas; source and destination can live in different arenas.
+Memcpy overlap is rejected, memmove supports it, zero-byte operations do not
+access pointers, and memchr returns a guest VA. Invalid checked arguments leave
+memory/registers unchanged; the generated void adapter aborts with a diagnostic.
+
+Tick frequency matches upstream's 19,200,000 Hz. Tick reads use host
+CLOCK_MONOTONIC; integer signed conversions truncate toward zero and reject
+unrepresentable results. Sleep uses nanosleep with remaining-time retries after
+EINTR; nonpositive durations and YieldThread use the host scheduler's yield.
+Void sleep/yield calls preserve registers. This is a host timing implementation,
+not the console's affinity/priority, suspend/resume, deterministic-clock or
+thread scheduling model. No random, heap allocation, string, file or full
+synchronization services are included yet.
+
+Registry export collisions remain errors, including when an actual SDK module
+exports a name also provided here. Select compatible providers/SDK metadata
+explicitly; there is no silent host override/interposition policy. Existing
+Windows implementations remain unchanged. Actual game use is unverified.
+
+Generated `guest_trap`, `guest_unimpl` and `guest_svc` now link to fatal iOS
+diagnostics. Unsupported kernel calls remain unsupported and abort rather than
+returning fabricated results. This does not implement guest exception unwinding.
+The CLI-only diagnostic modes are tested in subprocesses with core files disabled;
+the normal iOS probe never intentionally executes a fatal diagnostic.

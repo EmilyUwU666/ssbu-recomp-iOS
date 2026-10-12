@@ -34,7 +34,8 @@ int ssbu_ios_runtime_close(SSBUIOSGuestRuntime **runtime);
  * Unbind attempted within a running call is ignored. Defined DynSym.value
  * fields must be module-relative VAs; DynSym lacks absolute/type/weak metadata.
  * Calling missing weak/null functions is an error, not a no-op.
- * No Win32 runtime services, unwinding or non-local exit support yet. */
+ * Optional service providers use registry modules; full SDK services,
+ * unwinding and non-local exits remain unsupported. */
 int ssbu_ios_runtime_call(Ctx *context, uint64_t guest_address);
 int ssbu_ios_runtime_import(Ctx *context, int symbol_index);
 

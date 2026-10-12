@@ -29,6 +29,9 @@ int ssbu_guest_address_space_selftest(void);
 /* Generated call_indirect/host_import ABI and module-local nesting. */
 int ssbu_guest_runtime_selftest(void);
 
+/* Checked memory/timing ABI via optional static host-service imports. */
+int ssbu_guest_host_services_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,7 +10,7 @@ struct SSBURecompIOSApp: App {
 }
 
 private struct PortStatusView: View {
-    private let failures = Int(ssbu_portability_selftest()) | Int(ssbu_guest_memory_selftest()) | Int(ssbu_translated_memory_selftest()) | Int(ssbu_relative_relocation_selftest()) | Int(ssbu_guest_elf_loader_selftest()) | Int(ssbu_guest_module_import_selftest()) | Int(ssbu_guest_address_space_selftest()) | Int(ssbu_guest_runtime_selftest())
+    private let failures = Int(ssbu_portability_selftest()) | Int(ssbu_guest_memory_selftest()) | Int(ssbu_translated_memory_selftest()) | Int(ssbu_relative_relocation_selftest()) | Int(ssbu_guest_elf_loader_selftest()) | Int(ssbu_guest_module_import_selftest()) | Int(ssbu_guest_address_space_selftest()) | Int(ssbu_guest_runtime_selftest()) | Int(ssbu_guest_host_services_selftest())
 
     var body: some View {
         NavigationStack {

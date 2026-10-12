@@ -43,6 +43,17 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ssbu-ios-derived" \
             CODE_SIGNING_ALLOWED=NO build
 
+      - name: Build unsigned iOS ARM64 device app
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/SSBURecompIOS.xcodeproj \
+            -scheme SSBURecompIOS \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ssbu-ios-device" \
+            CODE_SIGNING_ALLOWED=NO build
+
       - name: Upload simulator-only artifact
         uses: actions/upload-artifact@v4
         with:

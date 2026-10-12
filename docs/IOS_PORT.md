@@ -13,9 +13,12 @@ The existing Windows port in this fork is kept intact.
   game runtime is **not yet wired to this mapping**, and still dereferences fixed addresses.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
-  XcodeGen and builds an **unsigned simulator application**.
+  XcodeGen, builds an **unsigned simulator application**, and separately compiles
+  an **unsigned iOS ARM64 device app**.
 
 The simulator artifact is **not** a device IPA and cannot play the game.
+The unsigned device build is only an ARM64 compilation check; it is not signed,
+installable on a stock iPhone, or a playable game.
 It is deliberately an isolated, deterministic first checkpoint requiring
 neither Nintendo content nor Apple signing credentials.
 

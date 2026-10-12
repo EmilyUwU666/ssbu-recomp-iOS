@@ -20,6 +20,9 @@ The existing Windows port in this fork is kept intact.
   mapping. This does **not** make other upstream host/runtime pointer casts safe.
 - A native Metal presentation/clear pass in the iOS bootstrap app. No NVN
   graphics commands or in-game imagery are rendered yet.
+- An incremental iOS arm64 static archive compiler for generated C files,
+  tested in CI with a synthetic (original) C fixture. This only compiles
+  lifted-code *objects*. Full game linking, imports, and runtime are unfinished.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -52,6 +55,30 @@ clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/GuestMemory.c \
 /tmp/ssbu-probe
 ```
 
+## AOT compilation experiment
+
+The branch includes `ios/scripts/compile_generated.py`. Run it on a Mac
+with Xcode's command line tools, using *locally* generated C sources from
+`tools/lifter/recomp_eh.py` and their accompanying generated headers:
+
+```sh
+python3 ios/scripts/compile_generated.py \
+  --generated /path/to/private/generated_C \
+  --output /path/to/private/build-ios-aot \
+  --jobs 4
+```
+
+The input folder must contain `.c` files, including any generated tables,
+and the matching generated headers. It can be produced on a separate computer;
+only the compilation phase requires macOS with the iOS SDK.
+
+The output is a **partial build product**, `libssbu_generated_ios_arm64.a`,
+not an iOS executable, game, app, or IPA. It does not resolve the game's
+imports or DLL/plugin loading and may expose Clang compatibility problems
+that need debugging. Never commit generated code or artifacts derived from
+your game dump. The CI test invokes this script only with a hand-written
+synthetic C fixture in `ios/tests/aot_fixture`.
+
 ## Major upstream constraints still to solve
 
 1. **Host/runtime dependencies**: `runtime/boot.c`, `runtime/hostrt.c`,
@@ -82,7 +109,7 @@ clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/GuestMemory.c \
 - **0 — Verified**: Xcode bootstrap, shared C helper checks, simulator and device ARM64 compilation.
 - **1 — In progress**: portable memory translation hooked into typed generated-code helpers;
   tests with generated synthetic guest data (not game code).
-- **2**: AOT game + module linking from an owner's local dump with reproducible
+- **2 — Static compilation experiment only**: AOT game + module linking from an owner's local dump with reproducible
   device-build tooling; resolve symbols, unwind support, and loading.
 - **3 — Presentation prototype only**: render a static Metal clear pass;
   next implement NVN drawing and test real, reproducible game frames.

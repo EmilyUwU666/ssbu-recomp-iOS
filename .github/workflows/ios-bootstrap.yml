@@ -26,6 +26,16 @@ jobs:
           set -euo pipefail
           xcrun --sdk iphoneos clang -std=c11 -arch arm64 -miphoneos-version-min=16.0 -fsyntax-only ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c
 
+      - name: AOT compile synthetic lifted code into iOS ARM64 archive
+        run: |
+          set -euo pipefail
+          python3 ios/scripts/compile_generated.py \
+            --generated ios/tests/aot_fixture \
+            --output "$RUNNER_TEMP/ssbu-aot-archive" \
+            --jobs 2
+          test -s "$RUNNER_TEMP/ssbu-aot-archive/libssbu_generated_ios_arm64.a"
+          xcrun --sdk iphoneos ar -t "$RUNNER_TEMP/ssbu-aot-archive/libssbu_generated_ios_arm64.a" | grep -q synthetic_game.o
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen

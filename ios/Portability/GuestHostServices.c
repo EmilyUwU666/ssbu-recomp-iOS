@@ -23,6 +23,53 @@ static int convert_signed(uint64_t input, int to_tick, uint64_t *out) {
     *out = unsigned_bits((int64_t)value); return 0;
 }
 
+static int extended_string_service(SSBUIOSHostService service, Ctx *c) {
+    unsigned char *destination, *source;
+    size_t destination_size, source_size;
+    uint64_t destination_va = c->x[0], source_va = c->x[1];
+    if (ssbu_guest_bound_span(destination_va, &destination, &destination_size)) return -1;
+    unsigned char *destination_end = memchr(destination, 0, destination_size);
+    if (!destination_end) return -1;
+    size_t destination_length = (size_t)(destination_end - destination);
+    int concatenate = service == SSBU_HOST_STRCAT || service == SSBU_HOST_STRNCAT;
+    int bounded = service == SSBU_HOST_STRNCAT;
+    uint64_t limit = c->x[2];
+    if (bounded && limit > SIZE_MAX) return -1;
+    if (bounded && !limit) return 0;
+    if (ssbu_guest_bound_span(source_va, &source, &source_size)) return -1;
+    size_t scan_size = source_size;
+    if (bounded && limit < scan_size) scan_size = (size_t)limit;
+    unsigned char *source_end = memchr(source, 0, scan_size);
+    if (!source_end && (!bounded || scan_size < limit)) return -1;
+    size_t source_length = source_end ? (size_t)(source_end - source) : scan_size;
+    if (concatenate) {
+        /* Subtraction bounds the sum and reserves space for the final NUL. */
+        if (source_length > destination_size - destination_length - 1) return -1;
+        size_t write_size = destination_length + source_length + 1;
+        size_t read_size = source_length + (source_end != NULL);
+        if (destination_va < source_va + read_size &&
+            source_va < destination_va + write_size) return -1;
+        memcpy(destination_end, source, source_length);
+        destination_end[source_length] = 0;
+        return 0;
+    }
+    /* Both complete C strings were checked in their own bound arenas. */
+    char *match;
+    switch (service) {
+    case SSBU_HOST_STRSTR:
+        match = strstr((char *)destination, (char *)source); break;
+    case SSBU_HOST_STRPBRK:
+        match = strpbrk((char *)destination, (char *)source); break;
+    case SSBU_HOST_STRSPN:
+        c->x[0] = strspn((char *)destination, (char *)source); return 0;
+    case SSBU_HOST_STRCSPN:
+        c->x[0] = strcspn((char *)destination, (char *)source); return 0;
+    default: return -1;
+    }
+    c->x[0] = match ? destination_va + (size_t)(match - (char *)destination) : 0;
+    return 0;
+}
+
 static int string_service(SSBUIOSHostService service, Ctx *c) {
     uint64_t a_va = c->x[0], b_va = c->x[1];
     uint64_t limit = service == SSBU_HOST_STRNLEN ? c->x[1] : c->x[2];
@@ -84,6 +131,8 @@ int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *c) {
     if (!c) return -1;
     if (service >= SSBU_HOST_STRLEN && service <= SSBU_HOST_STRRCHR)
         return string_service(service, c);
+    if (service >= SSBU_HOST_STRCAT && service <= SSBU_HOST_STRCSPN)
+        return extended_string_service(service, c);
     if (service >= SSBU_HOST_MEMCPY && service <= SSBU_HOST_MEMCHR) {
         uint64_t count = c->x[2];
         if (count > SIZE_MAX) return -1;
@@ -170,13 +219,21 @@ ADAPTER(h_strcpy, SSBU_HOST_STRCPY)
 ADAPTER(h_strncpy, SSBU_HOST_STRNCPY)
 ADAPTER(h_strchr, SSBU_HOST_STRCHR)
 ADAPTER(h_strrchr, SSBU_HOST_STRRCHR)
+ADAPTER(h_strcat, SSBU_HOST_STRCAT)
+ADAPTER(h_strncat, SSBU_HOST_STRNCAT)
+ADAPTER(h_strstr, SSBU_HOST_STRSTR)
+ADAPTER(h_strpbrk, SSBU_HOST_STRPBRK)
+ADAPTER(h_strspn, SSBU_HOST_STRSPN)
+ADAPTER(h_strcspn, SSBU_HOST_STRCSPN)
 
 static const FnEntry functions[] = {
     {0x100, h_memcpy}, {0x110, h_memmove}, {0x120, h_memset}, {0x130, h_memcmp},
     {0x140, h_memchr}, {0x150, h_tick}, {0x160, h_frequency}, {0x170, h_ns_to_tick},
     {0x180, h_tick_to_ns}, {0x190, h_sleep}, {0x1a0, h_yield},
     {0x1b0, h_strlen}, {0x1c0, h_strnlen}, {0x1d0, h_strcmp}, {0x1e0, h_strncmp},
-    {0x1f0, h_strcpy}, {0x200, h_strncpy}, {0x210, h_strchr}, {0x220, h_strrchr}
+    {0x1f0, h_strcpy}, {0x200, h_strncpy}, {0x210, h_strchr}, {0x220, h_strrchr},
+    {0x230, h_strcat}, {0x240, h_strncat}, {0x250, h_strstr}, {0x260, h_strpbrk},
+    {0x270, h_strspn}, {0x280, h_strcspn}
 };
 /* Exact upstream nn::os import names, byte-sorted for registry lookup. */
 static const SSBUIOSGuestExport exports[] = {
@@ -188,8 +245,10 @@ static const SSBUIOSGuestExport exports[] = {
     {"_ZN2nn2os22GetSystemTickFrequencyEv", 0x160},
     {"memchr", 0x140}, {"memcmp", 0x130}, {"memcpy", 0x100},
     {"memmove", 0x110}, {"memset", 0x120},
-    {"strchr", 0x210}, {"strcmp", 0x1d0}, {"strcpy", 0x1f0}, {"strlen", 0x1b0},
-    {"strncmp", 0x1e0}, {"strncpy", 0x200}, {"strnlen", 0x1c0}, {"strrchr", 0x220}
+    {"strcat", 0x230}, {"strchr", 0x210}, {"strcmp", 0x1d0}, {"strcpy", 0x1f0},
+    {"strcspn", 0x280}, {"strlen", 0x1b0}, {"strncat", 0x240},
+    {"strncmp", 0x1e0}, {"strncpy", 0x200}, {"strnlen", 0x1c0},
+    {"strpbrk", 0x260}, {"strrchr", 0x220}, {"strspn", 0x270}, {"strstr", 0x250}
 };
 const SSBUIOSGuestModule ssbu_ios_host_services_module = {
     "ios-host-services", SSBU_IOS_HOST_SERVICES_BASE, SSBU_IOS_HOST_SERVICES_BASE,

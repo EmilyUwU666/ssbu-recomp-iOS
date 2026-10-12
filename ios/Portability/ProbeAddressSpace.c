@@ -135,6 +135,14 @@ int ssbu_guest_address_space_selftest(void) {
     Ctx string_context = {0}; string_context.x[0] = BASE + 4095;
     CHECK(ssbu_ios_host_service(SSBU_HOST_STRLEN, &string_context) == -1 &&
           string_context.x[0] == BASE + 4095);
+    string_context.x[1] = BASE + 1024;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRSTR, &string_context) == -1);
+    string_context.x[0] = BASE + 1024; string_context.x[1] = BASE + 4095;
+    string_context.x[2] = 2;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCAT, &string_context) == -1 && rd8(BASE + 1024) == 0);
+    string_context.x[2] = 1;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCAT, &string_context) == 0 &&
+          rd8(BASE + 1024) == 'x' && rd8(BASE + 1025) == 0);
     CHECK(ssbu_guest_bound_span(BASE + 4096, &span, &remaining) == 0 && remaining == 4096);
     wr32(BASE + 4096, 99);
     CHECK(rd32(BASE + 4096) == 99);

@@ -25,6 +25,11 @@ static void caller(Ctx *c) {
     c->x[0] = DATA + 256;
     c->x[30] = BASE + 0x114;
     host_import(c, 3); c->x[7] = c->x[0];
+    c->x[0] = DATA + 384; c->x[1] = DATA + 256;
+    c->x[30] = BASE + 0x118;
+    host_import(c, 4); c->x[8] = c->x[0];
+    c->x[30] = BASE + 0x11c;
+    host_import(c, 5); c->x[9] = c->x[0];
     c->x[30] = lr;
 }
 
@@ -44,10 +49,11 @@ int ssbu_guest_host_services_selftest(void) {
     };
     const DynSym imports[] = {
         {"memcpy", 0, 0}, {"_ZN2nn2os22GetSystemTickFrequencyEv", 0, 0},
-        {"_ZN2nn2os13GetSystemTickEv", 0, 0}, {"strlen", 0, 0}
+        {"_ZN2nn2os13GetSystemTickEv", 0, 0}, {"strlen", 0, 0},
+        {"strcat", 0, 0}, {"strstr", 0, 0}
     };
     SSBUIOSModuleSymbols tables[] = {
-        {"host-caller", imports, 4, NULL}, ssbu_ios_host_services_symbols
+        {"host-caller", imports, 6, NULL}, ssbu_ios_host_services_symbols
     };
     SSBUIOSModuleRegistry registry = {0};
     unsigned char original[32];
@@ -61,12 +67,15 @@ int ssbu_guest_host_services_selftest(void) {
     CHECK(ssbu_guest_address_space_create(&space, arenas, 2) == 0);
     CHECK(ssbu_guest_address_space_bind(space) == 0 && ssbu_ios_runtime_bind(runtime) == 0);
     memcpy(ssbu_guest_bound_pointer(DATA + 256, 5), "abba", 5);
+    memcpy(ssbu_guest_bound_pointer(DATA + 384, 2), "x", 2);
     Ctx c = {0};
     c.x[0] = DATA + 64; c.x[1] = BASE + 64; c.x[2] = 16;
     c.x[30] = BASE + 0x900; c.in_import = "service-outer"; c.import_from = 42;
     CHECK(ssbu_ios_runtime_call(&c, BASE + 0x100) == 0);
     CHECK(c.x[4] == DATA + 64 && c.x[5] == SSBU_IOS_TICK_HZ && c.x[6] > 0);
     CHECK(c.x[7] == 4);
+    CHECK(c.x[8] == DATA + 384 && c.x[9] == DATA + 385);
+    CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 384, 6), "xabba", 6));
     CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 64, 16), original, 16));
     CHECK(!strcmp(c.in_import, "service-outer") && c.import_from == 42 && c.x[30] == BASE + 0x900);
 
@@ -162,6 +171,73 @@ int ssbu_guest_host_services_selftest(void) {
     CHECK(ssbu_guest_bound_span(BASE + 4096, &span, &span_length) == -1 &&
           span == (unsigned char *)(uintptr_t)1 && span_length == 123);
     CHECK(ssbu_guest_bound_span(BASE + 4095, &span, &span_length) == 0 && span_length == 1);
+
+    /* Concatenation adds a NUL even when the count truncates a nonterminated
+     * source. It validates the existing destination and rejects all overlap. */
+    c.x[0] = DATA + 384; c.x[1] = BASE + 4095; c.x[2] = 1;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCAT, &c) == 0 && c.x[0] == DATA + 384);
+    CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 384, 7), "xabbaz", 7));
+    c.x[1] = UINT64_MAX; c.x[2] = 0;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCAT, &c) == 0 && c.x[0] == DATA + 384);
+    c.x[1] = DATA + 385;
+    CHECK(unchanged_error(SSBU_HOST_STRCAT, &c));
+    CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 384, 7), "xabbaz", 7));
+    c.x[1] = BASE + 4095; c.x[2] = 2;
+    CHECK(unchanged_error(SSBU_HOST_STRNCAT, &c));
+    CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 384, 7), "xabbaz", 7));
+    CHECK(unchanged_error(SSBU_HOST_STRCAT, &c));
+    c.x[0] = DATA + 4095; c.x[1] = DATA + 256; c.x[2] = 0;
+    CHECK(unchanged_error(SSBU_HOST_STRNCAT, &c) && rd8(DATA + 4095) == 'z');
+    wr8(DATA + 4093, 'q'); wr8(DATA + 4094, 0); wr8(DATA + 4095, 0xa5);
+    c.x[0] = DATA + 4093; c.x[1] = BASE + 4095; c.x[2] = 1;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCAT, &c) == 0 && c.x[0] == DATA + 4093);
+    CHECK(rd8(DATA + 4093) == 'q' && rd8(DATA + 4094) == 'z' && rd8(DATA + 4095) == 0);
+    c.x[1] = DATA + 256; c.x[2] = UINT64_MAX;
+    CHECK(unchanged_error(SSBU_HOST_STRCAT, &c));
+    CHECK(unchanged_error(SSBU_HOST_STRNCAT, &c));
+    CHECK(rd8(DATA + 4094) == 'z' && rd8(DATA + 4095) == 0);
+    /* A short terminated source is valid even when the limit is very large. */
+    c.x[0] = DATA + 384; c.x[1] = DATA + 256;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRNCAT, &c) == 0);
+    CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 384, 11), "xabbazabba", 11));
+
+    /* Search/set operands stay guest addresses; empty and high-byte sets use
+     * the host C byte semantics only after full arena-bounded validation. */
+    memcpy(ssbu_guest_bound_pointer(BASE + 512, 3), "az", 3);
+    const struct { SSBUIOSHostService id; uint64_t source; uint64_t result; } searches[] = {
+        {SSBU_HOST_STRSTR, DATA + 256, DATA + 385},
+        {SSBU_HOST_STRSTR, DATA + 260, DATA + 384},
+        {SSBU_HOST_STRSTR, BASE + 4093, 0},
+        {SSBU_HOST_STRPBRK, BASE + 512, DATA + 385},
+        {SSBU_HOST_STRSPN, BASE + 512, 0},
+        {SSBU_HOST_STRCSPN, BASE + 512, 1},
+        {SSBU_HOST_STRPBRK, DATA + 260, 0},
+        {SSBU_HOST_STRSPN, DATA + 260, 0},
+        {SSBU_HOST_STRCSPN, DATA + 260, 10}
+    };
+    /* An absent needle in the same arena as the final unterminated byte. */
+    wr8(BASE + 4093, 'q'); wr8(BASE + 4094, 0);
+    for (size_t i = 0; i < sizeof searches / sizeof searches[0]; ++i) {
+        c.x[0] = DATA + 384; c.x[1] = searches[i].source;
+        CHECK(ssbu_ios_host_service(searches[i].id, &c) == 0 && c.x[0] == searches[i].result);
+    }
+    wr8(BASE + 520, 0xff); wr8(BASE + 521, 0xff); wr8(BASE + 522, 'a'); wr8(BASE + 523, 0);
+    wr8(DATA + 520, 0xff); wr8(DATA + 521, 0);
+    c.x[0] = BASE + 520; c.x[1] = DATA + 520;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRSPN, &c) == 0 && c.x[0] == 2);
+    c.x[0] = BASE + 520;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRPBRK, &c) == 0 && c.x[0] == BASE + 520);
+    const SSBUIOSHostService scans[] = {SSBU_HOST_STRSTR, SSBU_HOST_STRPBRK,
+                                      SSBU_HOST_STRSPN, SSBU_HOST_STRCSPN};
+    for (size_t i = 0; i < sizeof scans / sizeof scans[0]; ++i) {
+        c.x[0] = DATA + 384; c.x[1] = BASE + 4095;
+        CHECK(unchanged_error(scans[i], &c));
+        c.x[0] = BASE + 4095; c.x[1] = DATA + 260;
+        CHECK(unchanged_error(scans[i], &c));
+        c.x[0] = DATA + 260; c.x[1] = DATA + 260;
+        CHECK(ssbu_ios_host_service(scans[i], &c) == 0 &&
+              c.x[0] == (scans[i] == SSBU_HOST_STRSTR ? DATA + 260 : 0));
+    }
 
     /* Exact signed conversions, including truncation toward zero. */
     c.x[0] = 1000000000;

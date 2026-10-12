@@ -81,7 +81,7 @@ The existing Windows port in this fork is kept intact.
   CI tests two original synthetic module archives with a real host-runtime call,
   then cross-compiles both archives for iOS ARM64.
 - An optional original static **host-service provider** for checked memcpy,
-  memmove, memset, memcmp and memchr, eight checked string functions, plus nn::os tick/frequency/conversion,
+  memmove, memset, memcmp and memchr, fourteen checked string functions, plus nn::os tick/frequency/conversion,
   sleep and yield imports. The provider uses reserved guest function addresses
   and the same runtime import scopes; native data pointers are never returned.
 - Explicit iOS fatal diagnostics for generated guest traps, untranslated
@@ -432,8 +432,9 @@ Memcpy overlap is rejected, memmove supports it, zero-byte operations do not
 access pointers, and memchr returns a guest VA. Invalid checked arguments leave
 memory/registers unchanged; the generated void adapter aborts with a diagnostic.
 
-String imports include strlen, strnlen, strcmp, strncmp, strcpy, strncpy, strchr
-and strrchr. Scans stay within one bound arena, even if another arena is adjacent.
+String imports include strlen, strnlen, strcmp, strncmp, strcpy, strncpy, strchr,
+strrchr, strcat, strncat, strstr, strpbrk, strspn and strcspn. Scans stay within one
+bound arena, even if another arena is adjacent.
 Unbounded scans must reach a NUL or an earlier valid result (a comparison
 difference or first strchr match); bounded reads can stop at count or NUL without
 requiring the unused suffix to be mapped. Comparisons use unsigned bytes.
@@ -441,6 +442,14 @@ Copies validate all required source/destination bytes and reject overlap before
 writing. Strncpy copies exactly count bytes, padding after a NUL, and need not
 terminate a truncated result. Zero-count bounded calls do not access pointers;
 searches return guest VAs, including the terminator when searching for NUL.
+Concatenation validates the existing terminated destination before any source
+access, reserves space for the final NUL, and rejects source overlap with the
+entire resulting destination interval. Strncat consumes at most count source
+bytes, appends those bytes and always terminates the result (unlike strncpy).
+At count zero it validates the destination but does not access the source.
+Substring and character-set searches require both complete strings to terminate
+inside their arenas, even if an early result or empty needle/set would otherwise
+be possible. They return guest pointers or byte counts, never host pointers.
 The checked span API exposes only the remainder of one arena with a borrowed
 binding lifetime. Callers must synchronize concurrent changes to string memory;
 the validation/write sequence is not a transaction against other workers.

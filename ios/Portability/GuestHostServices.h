@@ -10,7 +10,9 @@ typedef enum {
     SSBU_HOST_TICK_FREQUENCY, SSBU_HOST_NS_TO_TICK, SSBU_HOST_TICK_TO_NS,
     SSBU_HOST_SLEEP, SSBU_HOST_YIELD,
     SSBU_HOST_STRLEN, SSBU_HOST_STRNLEN, SSBU_HOST_STRCMP, SSBU_HOST_STRNCMP,
-    SSBU_HOST_STRCPY, SSBU_HOST_STRNCPY, SSBU_HOST_STRCHR, SSBU_HOST_STRRCHR
+    SSBU_HOST_STRCPY, SSBU_HOST_STRNCPY, SSBU_HOST_STRCHR, SSBU_HOST_STRRCHR,
+    SSBU_HOST_STRCAT, SSBU_HOST_STRNCAT, SSBU_HOST_STRSTR,
+    SSBU_HOST_STRPBRK, SSBU_HOST_STRSPN, SSBU_HOST_STRCSPN
 } SSBUIOSHostService;
 
 /* Checked Ctx service ABI. Invalid pointers, unsupported IDs or conversion
@@ -21,6 +23,10 @@ typedef enum {
  * Strings never cross an arena. Bounded reads stop at NUL/count; comparisons
  * stop at the first differing byte. Copies validate before writing and reject
  * overlap. Callers must synchronize concurrent guest-memory modifications.
+ * Concatenation/search/set scans require a terminated first operand. Search
+ * and set operands must also terminate; strncat reads at most count source
+ * bytes and always writes a terminator. At count zero it validates only the
+ * destination string, with no source access.
  */
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *context);
 

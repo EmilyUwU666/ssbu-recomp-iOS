@@ -17,6 +17,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Portability checks failed (bitmask 0x%x)\n", failures);
         return 1;
     }
-    puts("PASS: runtime helpers, synthetic dispatch, and checked guest relocations, synthetic ELF loading, and static module imports, multi-arena worker lifetimes and generated call/import scopes, and host memory/timing services and explicit provider preferences pass");
+    puts("PASS: runtime helpers, synthetic dispatch, and checked guest relocations, synthetic ELF loading, and static module imports, multi-arena worker lifetimes and generated call/import scopes, and host memory/string/timing services and explicit provider preferences pass");
     return 0;
 }

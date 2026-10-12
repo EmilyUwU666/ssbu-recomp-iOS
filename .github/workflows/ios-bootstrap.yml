@@ -18,13 +18,13 @@ jobs:
       - name: Portable runtime smoke test (macOS)
         run: |
           set -euo pipefail
-          xcrun clang -std=c11 -O2 -Wall -Wextra ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/ProbeCli.c -o "$RUNNER_TEMP/ssbu-portability-test"
+          xcrun clang -std=c11 -O2 -Wall -Wextra ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/tests/aot_fixture/synthetic_game.c ios/Portability/ProbeCli.c -I runtime -o "$RUNNER_TEMP/ssbu-portability-test"
           "$RUNNER_TEMP/ssbu-portability-test"
 
       - name: iOS ARM64 C syntax check
         run: |
           set -euo pipefail
-          xcrun --sdk iphoneos clang -std=c11 -arch arm64 -miphoneos-version-min=16.0 -fsyntax-only ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c
+          xcrun --sdk iphoneos clang -std=c11 -arch arm64 -miphoneos-version-min=16.0 -fsyntax-only ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/tests/aot_fixture/synthetic_game.c -I runtime
 
       - name: AOT compile synthetic lifted code into iOS ARM64 archive
         run: |
@@ -63,6 +63,14 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/ssbu-ios-device" \
             CODE_SIGNING_ALLOWED=NO build
+
+      - name: Check linked ARM64 fixture archive
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/ssbu-ios-device/Build/Products/Debug-iphoneos/libSSBULiftedFixture.a"
+          test -s "$ARCHIVE"
+          xcrun --sdk iphoneos nm "$ARCHIVE" | grep -q "_fn_table"
+          xcrun --sdk iphoneos nm "$ARCHIVE" | grep -q "_ssbu_synthetic_lifted_fn"
 
       - name: Upload simulator-only artifact
         uses: actions/upload-artifact@v4

@@ -6,6 +6,19 @@ settings:
     SWIFT_VERSION: "5.0"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
 targets:
+  LiftedFixture:
+    type: library.static
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: tests/aot_fixture/synthetic_game.c
+    settings:
+      base:
+        PRODUCT_NAME: SSBULiftedFixture
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../runtime"
+        GCC_PREPROCESSOR_DEFINITIONS: "SSBU_GUEST_ADDRESS_TRANSLATION=1 $(inherited)"
+        GCC_C_LANGUAGE_STANDARD: gnu11
+        SKIP_INSTALL: YES
   SSBURecompIOS:
     type: application
     platform: iOS
@@ -15,6 +28,8 @@ targets:
       - path: Portability
         excludes:
           - ProbeCli.c
+    dependencies:
+      - target: LiftedFixture
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.ssbu.recomp.ios.bootstrap

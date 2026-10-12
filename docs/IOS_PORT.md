@@ -1,4 +1,4 @@
-# iOS / iPadOS static-recompilation port — checkpoints 0–1
+# iOS / iPadOS static-recompilation port — checkpoints 0–2 (experimental)
 
 Status: **bootstrap only, no gameplay, no IPA, and no signed device build.**
 The existing Windows port in this fork is kept intact.
@@ -21,8 +21,13 @@ The existing Windows port in this fork is kept intact.
 - A native Metal presentation/clear pass in the iOS bootstrap app. No NVN
   graphics commands or in-game imagery are rendered yet.
 - An incremental iOS arm64 static archive compiler for generated C files,
-  tested in CI with a synthetic (original) C fixture. This only compiles
-  lifted-code *objects*. Full game linking, imports, and runtime are unfinished.
+  tested in CI with a synthetic (original) C fixture.
+- A separate `LiftedFixture` **static library target linked into the
+  actual iOS app**, defining a synthetic `fn_table` and functions with
+  the generated AArch64 `Ctx *` interface. A portable dispatcher resolves
+  synthetic guest function addresses and invokes the statically linked code,
+  exercising guest memory writes through address translation.
+  This does **not** link or execute actual game code.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -109,8 +114,10 @@ synthetic C fixture in `ios/tests/aot_fixture`.
 - **0 — Verified**: Xcode bootstrap, shared C helper checks, simulator and device ARM64 compilation.
 - **1 — In progress**: portable memory translation hooked into typed generated-code helpers;
   tests with generated synthetic guest data (not game code).
-- **2 — Static compilation experiment only**: AOT game + module linking from an owner's local dump with reproducible
-  device-build tooling; resolve symbols, unwind support, and loading.
+- **2 — Synthetic static dispatch verified only**: AOT game + module linking
+  from an owner's local dump with reproducible device-build tooling; resolve
+  imports, symbol collisions, unwinding, and the real module loader. The
+  iOS app now statically links synthetic lifted code, not actual SSBU code.
 - **3 — Presentation prototype only**: render a static Metal clear pass;
   next implement NVN drawing and test real, reproducible game frames.
 - **4**: game startup, input, audio, videos, save paths, and playable tests.

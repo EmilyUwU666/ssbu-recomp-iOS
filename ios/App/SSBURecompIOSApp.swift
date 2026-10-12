@@ -24,7 +24,7 @@ private struct PortStatusView: View {
                         .foregroundStyle(.secondary)
 
                     Label(
-                        failures == 0 ? "Portable runtime checks passed" : "Runtime checks failed: \(failures)",
+                        failures == 0 ? "Portable runtime and static dispatch checks passed" : "Runtime checks failed: \(failures)",
                         systemImage: failures == 0 ? "checkmark.circle.fill" : "xmark.circle.fill"
                     )
                     .foregroundStyle(failures == 0 ? .green : .red)
@@ -40,7 +40,7 @@ private struct PortStatusView: View {
                                 .padding(12)
                         }
 
-                    Text("This app tests portable C helpers, address translation for the recompiler's memory accessors, and a native Metal presentation surface. It does not load or run Super Smash Bros. Ultimate.")
+                    Text("This app statically links synthetic lifted C code, dispatches it through a function table against relocated guest memory, and displays a Metal test surface. It does not load or run Super Smash Bros. Ultimate.")
                         .fixedSize(horizontal: false, vertical: true)
 
                     Divider()

@@ -8,6 +8,8 @@
 
 #include "GuestMemory.h"
 #include "Probe.h"
+#include "GuestDispatch.h"
+#include "../tests/aot_fixture/SyntheticAddresses.h"
 
 /* Reference diagnostics for synthetic LDXR/STXR tests.
  * The complete runtime supplies this symbol in runtime/hostrt.c. */
@@ -79,6 +81,29 @@ int ssbu_translated_memory_selftest(void) {
     if (stx64(&atomic, base + 768, UINT64_C(11)) != 0 ||
         rd64(base + 768) != 11 || g_stx_diagnostics != 0)
         failed |= 65536;
+
+    /* The fixture comes from a separate, statically linked target in Xcode.
+       Dispatch an AArch64-style Ctx to synthetic recompiled-style functions.
+       A successful return requires the fixture's real function table and a
+       guest virtual address correctly translated through the memory binder. */
+    Ctx lifted = {0};
+    lifted.x[0] = base + 1024;
+    wr32(base + 1024, 20);
+    if (ssbu_ios_dispatch_guest(&lifted, SSBU_SYNTHETIC_INC_ADDR) != 0 ||
+        rd32(base + 1024) != 21 || lifted.x[0] != 21 ||
+        lifted.fn != SSBU_SYNTHETIC_INC_ADDR)
+        failed |= 131072;
+
+    lifted.x[0] = base + 1024;
+    if (ssbu_ios_dispatch_guest(&lifted, SSBU_SYNTHETIC_DOUBLE_ADDR) != 0 ||
+        rd32(base + 1024) != 42 || lifted.x[0] != 42 ||
+        lifted.fn != SSBU_SYNTHETIC_DOUBLE_ADDR)
+        failed |= 262144;
+
+    lifted.x[0] = 7;
+    if (ssbu_ios_dispatch_guest(&lifted, base + 0x1234567) != -1 ||
+        lifted.x[0] != 7)
+        failed |= 524288;
 
     /* Reject invalid addresses using the checked API, avoiding a crash test. */
     if (ssbu_guest_memory_translate(&memory, base + 4092, 8) != NULL ||

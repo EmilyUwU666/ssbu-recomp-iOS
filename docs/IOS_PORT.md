@@ -63,6 +63,15 @@ The existing Windows port in this fork is kept intact.
   imported data and writes a result back into a different caller arena. Worker
   tests cover isolation at identical guest VAs, refused teardown, thread-exit
   cleanup, mapping ownership transfer, overlap rejection and crossing boundaries.
+- A portable **generated-call ABI bridge** implementing iOS-only
+  `call_indirect(Ctx *, VA)` and `host_import(Ctx *, symbol_index)`. A per-worker
+  runtime scope tracks the executing module, so nested imports resolve against
+  that module's own generated `DynSym` table and restore the caller's scope.
+  Import diagnostic metadata is restored after normal nested returns.
+- A separate `LiftedRuntimeFixture` static target with two original modules
+  using the real runtime.h ABI. Both use symbol index zero for different imports;
+  a callback into the caller verifies scope restoration and cross-arena writes.
+  The ELF import test now also uses the actual `call_indirect` wrapper.
 - A host CLI smoke test, host ThreadSanitizer CI check and ARM64 iOS syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -95,8 +104,11 @@ clang -std=c11 -pthread -O2 -I runtime \
   ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c \
   ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c \
   ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c \
-  ios/Portability/ProbeAddressSpace.c \
+  ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c \
+  ios/Portability/ProbeGuestRuntime.c \
   ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c \
+  ios/tests/aot_fixture/synthetic_runtime_main.c \
+  ios/tests/aot_fixture/synthetic_runtime_sdk.c \
   ios/Portability/ProbeCli.c \
   -o /tmp/ssbu-probe
 /tmp/ssbu-probe
@@ -172,8 +184,11 @@ scheduling/publication and all direct host/runtime pointer casts remain unaudite
 supports ET_DYN, PT_LOAD and a restricted eager RELA/JMPREL import subset.
 NSO/NRO conversion/metadata integration, GNU-hash-only images, versioned symbols,
 TLS/IFUNC/COPY and packed REL/RELR relocations, symbol interposition, initialization/finalization,
-GPU execution and section permissions are unsupported. The upstream
-`call_indirect`/`host_import` implementation is not yet wired to this registry.
+GPU execution and section permissions are unsupported. The new iOS-only
+`call_indirect`/`host_import` bridge routes through the static module registry;
+the upstream Windows host implementation is unchanged. Actual generated game
+and SDK metadata, hardcoded guest addresses and Win32 import services still
+need integration.
 The registry's dependency callback verifies descriptors, not loaded data arenas:
 the caller must stage dependencies before execution. The owned address space
 now translates data across separate arenas and pins their lifetimes per worker.
@@ -257,3 +272,40 @@ and guest/host overlap, holes and boundary rejection. Local host tests also
 pass AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer. LeakSanitizer
 is disabled locally due to restricted /proc task inspection. No real game code,
 NSO/NRO module ingestion or Win32 service integration has been validated.
+
+## Generated call and import scopes
+
+`SSBUIOSModuleSymbols` associates each registry module name with that module's
+own immutable generated `DynSym` table. `ssbu_ios_runtime_create` requires one
+entry per module, validates names/defined-symbol offsets, and normalizes input
+order. It borrows the registry/module/symbol storage; keep that storage immutable
+and alive until the runtime is closed. Its per-thread bindings pin the runtime,
+not guest mappings; bind an owned address space separately before memory access.
+
+Enter code through `ssbu_ios_runtime_call`. The bridge tracks the executing
+module across calls independently of `Ctx.fn`, which records the most recently
+entered function. A generated `host_import(c, index)` therefore resolves an index
+from the active module's symbol table, even after a nested callback into a
+module whose index namespace differs. Defined symbols use that module's load
+bias; undefined names resolve through the static export registry. Data exports
+and addresses without corresponding AOT function entries cannot be called.
+`Ctx.in_import` and `Ctx.import_from` are restored after normal nested returns.
+
+The checked call/import variants return -1 for missing bindings, invalid indices,
+null/unknown addresses, missing imports, data-only targets, invalid return PCs or
+excessive nesting; lookup failures preserve context state. Import calls outside
+an entered runtime scope are rejected rather than guessing a module from the
+last `Ctx.fn`. Generated void ABI wrappers abort on failure and never silently
+return a fabricated zero result. Unbind during a running call is ignored to
+protect its frame. Runtime close refuses active worker bindings; explicit unbind
+or a pthread thread-exit destructor releases them. Stop new bind attempts before
+final destruction and join workers, as for address spaces.
+
+Limitations: `DynSym` exposes only name/value/defined, so runtime table definitions
+must supply module-relative symbol values; it does not preserve SHN_ABS,
+weak/type/version metadata. ELF relocation metadata remains separately checked.
+A missing weak function is not callable. Host service handlers, guest traps/SVC,
+exception/non-local unwinding and production thread scheduling remain unfinished.
+Generated sources must use these external ABI wrappers and module-unique tables;
+standalone generated dispatch definitions cannot be linked unchanged alongside
+this bridge. Only original synthetic fixtures have been compiled and executed.

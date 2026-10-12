@@ -3,6 +3,7 @@
 #include "GuestELFLoader.h"
 #include "GuestModules.h"
 #include "GuestAddressSpace.h"
+#include "GuestRuntime.h"
 #include "Probe.h"
 #include "../tests/aot_fixture/synthetic_sdk.h"
 
@@ -77,11 +78,11 @@ static void fixture(unsigned char *f, size_t size) {
     rela(f + 0xb00, 0x1220, 1026, 1, 0);
 }
 
-static const SSBUIOSModuleRegistry *test_registry;
 static int nested_status;
 static void synthetic_consumer(Ctx *context) {
     uint64_t target = rd64(context->x[1]); /* guest import slot */
-    nested_status = ssbu_ios_modules_dispatch(test_registry, context, target);
+    call_indirect(context, target);
+    nested_status = 0;
 }
 
 static int resolver_error(void *opaque, const char *name, uint64_t *out) {
@@ -110,6 +111,7 @@ int ssbu_guest_module_import_selftest(void) {
     SSBUIOSGuestMemory arenas[2] = {{0}};
     SSBUIOSGuestMemory *mem = &arenas[0];
     SSBUIOSGuestAddressSpace *space = NULL;
+    SSBUIOSGuestRuntime *runtime = NULL;
     const FnEntry main_functions[] = {{0x100, synthetic_consumer}};
     const SSBUIOSGuestExport sdk_exports[] = {{"sdk_add", 0x100}, {"sdk_data", 0x1800}, {"sdk_update", 0x200}};
     SSBUIOSGuestModule modules[] = {
@@ -124,6 +126,11 @@ int ssbu_guest_module_import_selftest(void) {
     uint64_t entry = 0, pointer = 0;
     int failed = 0;
     CHECK(ssbu_ios_modules_init(&registry, modules, 2) == 0);
+    const SSBUIOSModuleSymbols runtime_tables[] = {
+        {"synthetic-main", NULL, 0}, {"synthetic-sdk", NULL, 0}
+    };
+    CHECK(ssbu_ios_runtime_create(&runtime, &registry, runtime_tables, 2) == 0);
+    CHECK(ssbu_ios_runtime_bind(runtime) == 0);
     fixture(bytes, sizeof bytes);
     CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
                                       &linker, mem, &entry) == 0);
@@ -145,9 +152,9 @@ int ssbu_guest_module_import_selftest(void) {
      * separately linked provider C; ELF bytes remain non-executable data. */
     Ctx context = {0};
     context.x[0] = 5; context.x[1] = MAIN_BIAS + 0x1220;
-    test_registry = &registry; nested_status = -1;
+    nested_status = -1;
     CHECK(ssbu_guest_memory_bind(mem) == 0);
-    CHECK(ssbu_ios_modules_dispatch(&registry, &context, entry) == 0 &&
+    CHECK(ssbu_ios_runtime_call(&context, entry) == 0 &&
           nested_status == 0 && context.x[0] == 12 && context.fn == pointer);
     ssbu_guest_memory_unbind();
     CHECK(ssbu_ios_modules_dispatch(&registry, &context, SDK_BIAS + 0x101) == -1 &&
@@ -170,12 +177,14 @@ int ssbu_guest_module_import_selftest(void) {
     context.x[1] = MAIN_BIAS + 0x1220;
     context.x[2] = rd64(MAIN_BIAS + 0x1228); /* actual relocated data import */
     context.x[3] = MAIN_BIAS + 0x1800;
-    CHECK(ssbu_ios_modules_dispatch(&registry, &context, entry) == 0 &&
+    CHECK(ssbu_ios_runtime_call(&context, entry) == 0 &&
           nested_status == 0 && context.x[0] == 23 && context.fn == update_fn);
     CHECK(rd32(SDK_BIAS + 0x1800) == 23 && rd32(MAIN_BIAS + 0x1800) == 46);
     CHECK(ssbu_guest_address_space_close(&space) == -1 && space);
     ssbu_guest_memory_unbind();
     CHECK(ssbu_guest_address_space_close(&space) == 0 && !space);
+    ssbu_ios_runtime_unbind();
+    CHECK(ssbu_ios_runtime_close(&runtime) == 0 && !runtime);
 
     /* An absolute defined symbol does not acquire the image's load bias. */
     put16(bytes + 0x648 + 6, 0xfff1); put64(bytes + 0x648 + 8, 100);
@@ -329,6 +338,7 @@ done:
     ssbu_guest_memory_close(mem);
     ssbu_guest_memory_close(&arenas[1]);
     if (ssbu_guest_address_space_close(&space)) failed = 1;
-    test_registry = NULL;
+    ssbu_ios_runtime_unbind();
+    if (ssbu_ios_runtime_close(&runtime)) failed = 1;
     return failed;
 }

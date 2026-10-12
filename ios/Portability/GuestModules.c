@@ -73,9 +73,10 @@ int ssbu_ios_modules_dependency(void *opaque, const char *name) {
     return 1;
 }
 
-int ssbu_ios_modules_dispatch(const SSBUIOSModuleRegistry *r, Ctx *c,
-                              uint64_t address) {
-    if (!r || !r->modules || !r->count || !c) return -1;
+int ssbu_ios_modules_lookup(const SSBUIOSModuleRegistry *r, uint64_t address,
+                            const SSBUIOSGuestModule **owner,
+                            void (**function)(Ctx *)) {
+    if (!r || !r->modules || !r->count || !owner || !function) return -1;
     for (size_t i = 0; i < r->count; ++i) {
         const SSBUIOSGuestModule *m = &r->modules[i];
         if (address < m->guest_start ||
@@ -86,10 +87,20 @@ int ssbu_ios_modules_dispatch(const SSBUIOSModuleRegistry *r, Ctx *c,
         while (low < high) {
             size_t mid = low + (high - low) / 2;
             const FnEntry *e = &m->functions[mid];
-            if (e->addr == offset) { c->fn = address; e->fn(c); return 0; }
+            if (e->addr == offset) { *owner = m; *function = e->fn; return 0; }
             if (e->addr < offset) low = mid + 1; else high = mid;
         }
         return -1;
     }
     return -1;
+}
+
+int ssbu_ios_modules_dispatch(const SSBUIOSModuleRegistry *r, Ctx *c,
+                              uint64_t address) {
+    const SSBUIOSGuestModule *owner = NULL;
+    void (*function)(Ctx *) = NULL;
+    if (!c || ssbu_ios_modules_lookup(r, address, &owner, &function)) return -1;
+    c->fn = address;
+    function(c);
+    return 0;
 }

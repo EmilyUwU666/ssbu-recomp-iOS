@@ -26,6 +26,9 @@ int ssbu_guest_module_import_selftest(void);
 /* Owned multi-arena lookup, worker isolation and pinned mapping teardown. */
 int ssbu_guest_address_space_selftest(void);
 
+/* Generated call_indirect/host_import ABI and module-local nesting. */
+int ssbu_guest_runtime_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -18,19 +18,19 @@ jobs:
       - name: Portable runtime smoke test (macOS)
         run: |
           set -euo pipefail
-          xcrun clang -std=c11 -pthread -O2 -Wall -Wextra ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/Portability/ProbeCli.c -I runtime -o "$RUNNER_TEMP/ssbu-portability-test"
+          xcrun clang -std=c11 -pthread -O2 -Wall -Wextra ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c ios/Portability/ProbeGuestRuntime.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/tests/aot_fixture/synthetic_runtime_main.c ios/tests/aot_fixture/synthetic_runtime_sdk.c ios/Portability/ProbeCli.c -I runtime -o "$RUNNER_TEMP/ssbu-portability-test"
           "$RUNNER_TEMP/ssbu-portability-test"
 
       - name: Guest worker lifetime and isolation (ThreadSanitizer)
         run: |
           set -euo pipefail
-          xcrun clang -std=c11 -pthread -O1 -g -Wall -Wextra -fsanitize=thread ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/Portability/ProbeCli.c -I runtime -o "$RUNNER_TEMP/ssbu-thread-test"
+          xcrun clang -std=c11 -pthread -O1 -g -Wall -Wextra -fsanitize=thread ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c ios/Portability/ProbeGuestRuntime.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/tests/aot_fixture/synthetic_runtime_main.c ios/tests/aot_fixture/synthetic_runtime_sdk.c ios/Portability/ProbeCli.c -I runtime -o "$RUNNER_TEMP/ssbu-thread-test"
           "$RUNNER_TEMP/ssbu-thread-test"
 
       - name: iOS ARM64 C syntax check
         run: |
           set -euo pipefail
-          xcrun --sdk iphoneos clang -std=c11 -arch arm64 -miphoneos-version-min=16.0 -fsyntax-only ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c -I runtime
+          xcrun --sdk iphoneos clang -std=c11 -arch arm64 -miphoneos-version-min=16.0 -fsyntax-only ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c ios/Portability/ProbeGuestRuntime.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/tests/aot_fixture/synthetic_runtime_main.c ios/tests/aot_fixture/synthetic_runtime_sdk.c -I runtime
 
       - name: AOT compile synthetic lifted code into iOS ARM64 archive
         run: |
@@ -80,6 +80,10 @@ jobs:
           SDK_ARCHIVE="$RUNNER_TEMP/ssbu-ios-device/Build/Products/Debug-iphoneos/libSSBULiftedSDKFixture.a"
           test -s "$SDK_ARCHIVE"
           xcrun --sdk iphoneos nm "$SDK_ARCHIVE" | grep -q "_fn_table_synthetic_sdk"
+          RUNTIME_ARCHIVE="$RUNNER_TEMP/ssbu-ios-device/Build/Products/Debug-iphoneos/libSSBULiftedRuntimeFixture.a"
+          test -s "$RUNTIME_ARCHIVE"
+          xcrun --sdk iphoneos nm "$RUNTIME_ARCHIVE" | grep -q "_fn_table_bridge_main"
+          xcrun --sdk iphoneos nm "$RUNTIME_ARCHIVE" | grep -q "_dyn_syms_bridge_sdk"
 
       - name: Upload simulator-only artifact
         uses: actions/upload-artifact@v4

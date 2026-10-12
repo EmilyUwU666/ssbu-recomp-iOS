@@ -36,4 +36,10 @@ int ssbu_ios_modules_dependency(void *registry, const char *name);
 int ssbu_ios_modules_dispatch(const SSBUIOSModuleRegistry *registry,
                               Ctx *context, uint64_t guest_address);
 
+/* Lookup without modifying Ctx; only success writes owner/function outputs. */
+int ssbu_ios_modules_lookup(const SSBUIOSModuleRegistry *registry,
+                            uint64_t guest_address,
+                            const SSBUIOSGuestModule **owner,
+                            void (**function)(Ctx *));
+
 #endif

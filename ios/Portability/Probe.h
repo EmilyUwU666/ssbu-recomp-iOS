@@ -23,6 +23,9 @@ int ssbu_guest_elf_loader_selftest(void);
 /* Synthetic main -> import slot -> separate static provider and rejection checks. */
 int ssbu_guest_module_import_selftest(void);
 
+/* Owned multi-arena lookup, worker isolation and pinned mapping teardown. */
+int ssbu_guest_address_space_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

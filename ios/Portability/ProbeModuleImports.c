@@ -2,6 +2,7 @@
 #define SSBU_GUEST_ADDRESS_TRANSLATION 1
 #include "GuestELFLoader.h"
 #include "GuestModules.h"
+#include "GuestAddressSpace.h"
 #include "Probe.h"
 #include "../tests/aot_fixture/synthetic_sdk.h"
 
@@ -24,8 +25,8 @@ static void put64(unsigned char *p, uint64_t x) {
     for (unsigned i = 0; i < 8; ++i) p[i] = (unsigned char)(x >> (i*8));
 }
 /* String offsets are intentionally explicit for malformed-metadata tests. */
-static const char strings[] = "\0synthetic-sdk\0sdk_add\0weak_hook\0local_data\0sdk_data\0";
-enum { NAME_DEP = 1, NAME_ADD = 15, NAME_WEAK = 23, NAME_LOCAL = 33, NAME_DATA = 44 };
+static const char strings[] = "\0synthetic-sdk\0sdk_add\0weak_hook\0local_data\0sdk_data\0sdk_update\0";
+enum { NAME_DEP = 1, NAME_ADD = 15, NAME_WEAK = 23, NAME_LOCAL = 33, NAME_DATA = 44, NAME_UPDATE = 53 };
 static void symbol(unsigned char *p, uint32_t name, unsigned char info,
                    uint16_t section, uint64_t value, uint64_t size) {
     put32(p, name); p[4] = info; put16(p + 6, section);
@@ -106,14 +107,16 @@ static int rejects(const unsigned char *bytes, size_t size,
 
 int ssbu_guest_module_import_selftest(void) {
     unsigned char bytes[4096];
-    SSBUIOSGuestMemory mem = {0};
+    SSBUIOSGuestMemory arenas[2] = {{0}};
+    SSBUIOSGuestMemory *mem = &arenas[0];
+    SSBUIOSGuestAddressSpace *space = NULL;
     const FnEntry main_functions[] = {{0x100, synthetic_consumer}};
-    const SSBUIOSGuestExport sdk_exports[] = {{"sdk_add", 0x100}, {"sdk_data", 0x1800}};
+    const SSBUIOSGuestExport sdk_exports[] = {{"sdk_add", 0x100}, {"sdk_data", 0x1800}, {"sdk_update", 0x200}};
     SSBUIOSGuestModule modules[] = {
         {"synthetic-main", MAIN_BIAS, MAIN_BIAS, 0x2000,
          main_functions, 1, NULL, 0},
         {"synthetic-sdk", SDK_BIAS, SDK_BIAS, 0x2000,
-         fn_table_synthetic_sdk, fn_table_synthetic_sdk_count, sdk_exports, 2}
+         fn_table_synthetic_sdk, fn_table_synthetic_sdk_count, sdk_exports, 3}
     };
     SSBUIOSModuleRegistry registry = {0};
     SSBUIOSGuestLinker linker = {ssbu_ios_modules_resolve,
@@ -123,19 +126,19 @@ int ssbu_guest_module_import_selftest(void) {
     CHECK(ssbu_ios_modules_init(&registry, modules, 2) == 0);
     fixture(bytes, sizeof bytes);
     CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
-                                      &linker, &mem, &entry) == 0);
+                                      &linker, mem, &entry) == 0);
     CHECK(entry == MAIN_BIAS + 0x100);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1200, &pointer, 8) == 0 &&
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1200, &pointer, 8) == 0 &&
           pointer == MAIN_BIAS + 0x1800);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1208, &pointer, 8) == 0 &&
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1208, &pointer, 8) == 0 &&
           pointer == SDK_BIAS + 0x104);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
           pointer == MAIN_BIAS + 0x17f8);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1218, &pointer, 8) == 0 &&
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1218, &pointer, 8) == 0 &&
           pointer == 0);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
           pointer == SDK_BIAS + 0x100);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1228, &entry, 8) == 0 &&
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1228, &entry, 8) == 0 &&
           entry == SDK_BIAS + 0x1800);
     entry = MAIN_BIAS + 0x100;
     /* ELF main entry -> original consumer C -> relocated import slot ->
@@ -143,56 +146,79 @@ int ssbu_guest_module_import_selftest(void) {
     Ctx context = {0};
     context.x[0] = 5; context.x[1] = MAIN_BIAS + 0x1220;
     test_registry = &registry; nested_status = -1;
-    CHECK(ssbu_guest_memory_bind(&mem) == 0);
+    CHECK(ssbu_guest_memory_bind(mem) == 0);
     CHECK(ssbu_ios_modules_dispatch(&registry, &context, entry) == 0 &&
           nested_status == 0 && context.x[0] == 12 && context.fn == pointer);
     ssbu_guest_memory_unbind();
     CHECK(ssbu_ios_modules_dispatch(&registry, &context, SDK_BIAS + 0x101) == -1 &&
           context.x[0] == 12);
-    ssbu_guest_memory_close(&mem);
+    /* Reload with the data-access provider imported by name, so BOTH function
+     * and data pointers below come from the actual ELF relocation path. */
+    ssbu_guest_memory_close(mem);
+    fixture(bytes, sizeof bytes);
+    put32(bytes + 0x618, NAME_UPDATE);
+    CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
+                                      &linker, mem, &entry) == 0);
+    const uint64_t update_fn = SDK_BIAS + 0x200;
+    CHECK(ssbu_guest_memory_open(&arenas[1], SDK_BIAS, 0x2000) == 0);
+    const uint32_t sdk_before = 20;
+    CHECK(ssbu_guest_memory_write(&arenas[1], SDK_BIAS + 0x1800, &sdk_before, 4) == 0);
+    CHECK(ssbu_guest_address_space_create(&space, arenas, 2) == 0 &&
+          !arenas[0].host && !arenas[1].host);
+    CHECK(ssbu_guest_address_space_bind(space) == 0);
+    context.x[0] = 3;
+    context.x[1] = MAIN_BIAS + 0x1220;
+    context.x[2] = rd64(MAIN_BIAS + 0x1228); /* actual relocated data import */
+    context.x[3] = MAIN_BIAS + 0x1800;
+    CHECK(ssbu_ios_modules_dispatch(&registry, &context, entry) == 0 &&
+          nested_status == 0 && context.x[0] == 23 && context.fn == update_fn);
+    CHECK(rd32(SDK_BIAS + 0x1800) == 23 && rd32(MAIN_BIAS + 0x1800) == 46);
+    CHECK(ssbu_guest_address_space_close(&space) == -1 && space);
+    ssbu_guest_memory_unbind();
+    CHECK(ssbu_guest_address_space_close(&space) == 0 && !space);
 
     /* An absolute defined symbol does not acquire the image's load bias. */
     put16(bytes + 0x648 + 6, 0xfff1); put64(bytes + 0x648 + 8, 100);
     CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
-                                      &linker, &mem, &entry) == 0);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
           pointer == 92);
-    ssbu_guest_memory_close(&mem);
+    ssbu_guest_memory_close(mem);
     fixture(bytes, sizeof bytes);
     /* Exercise JUMP_SLOT S+A with a nonzero addend explicitly. */
     put64(bytes + 0xb10, 4);
     CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
-                                      &linker, &mem, &entry) == 0);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
           pointer == SDK_BIAS + 0x104);
-    ssbu_guest_memory_close(&mem);
+    ssbu_guest_memory_close(mem);
 
     /* A present provider also satisfies a weak import. */
     fixture(bytes, sizeof bytes);
     put32(bytes + 0x630, NAME_DATA);
     CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
-                                      &linker, &mem, &entry) == 0);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1218, &pointer, 8) == 0 &&
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1218, &pointer, 8) == 0 &&
           pointer == SDK_BIAS + 0x1800);
-    ssbu_guest_memory_close(&mem);
+    ssbu_guest_memory_close(mem);
 
     /* Relocation writes may alias metadata: plan all values first. */
     fixture(bytes, sizeof bytes);
     put64(bytes + 0xa00, 0x618); /* first write overwrites imported symbol */
     CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
-                                      &linker, &mem, &entry) == 0);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
           pointer == SDK_BIAS + 0x100);
-    ssbu_guest_memory_close(&mem);
+    ssbu_guest_memory_close(mem);
 
     /* PLT-only images can carry RELAENT without a regular RELA table. */
     fixture(bytes, sizeof bytes);
     put64(bytes + 0x340, 21); put64(bytes + 0x350, 21);
     CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
-                                      &linker, &mem, &entry) == 0);
-    CHECK(ssbu_guest_memory_read(&mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1220, &pointer, 8) == 0 &&
           pointer == SDK_BIAS + 0x100);
-    ssbu_guest_memory_close(&mem);
+    ssbu_guest_memory_close(mem);
 
     fixture(bytes, sizeof bytes);
     CHECK(rejects(bytes, sizeof bytes, NULL)); /* DT_NEEDED without linker */
@@ -300,7 +326,9 @@ int ssbu_guest_module_import_selftest(void) {
     CHECK(ssbu_ios_modules_dispatch(&registry, NULL, MAIN_BIAS + 0x100) == -1);
 done:
     ssbu_guest_memory_unbind();
-    ssbu_guest_memory_close(&mem);
+    ssbu_guest_memory_close(mem);
+    ssbu_guest_memory_close(&arenas[1]);
+    if (ssbu_guest_address_space_close(&space)) failed = 1;
     test_registry = NULL;
     return failed;
 }

@@ -21,9 +21,10 @@ void *ssbu_guest_memory_translate(const SSBUIOSGuestMemory *memory, uint64_t gue
 int ssbu_guest_memory_write(SSBUIOSGuestMemory *memory, uint64_t guest_address, const void *src, size_t length);
 int ssbu_guest_memory_read(const SSBUIOSGuestMemory *memory, uint64_t guest_address, void *dst, size_t length);
 
-/* Prototype binding for the opt-in runtime.h translation path.
- * No mapping may be closed/replaced while guest workers are using it.
- * This is intentionally not production-ready thread/lifetime management.
+/* Borrowed single-arena binding, local to this thread. Rejects replacing an
+ * existing binding; unbind first. Caller keeps mapping alive until unbind.
+ * Workers bind explicitly (no inheritance). Use GuestAddressSpace.h for
+ * owned multi-arena lifetime/pinning.
  */
 int ssbu_guest_memory_bind(const SSBUIOSGuestMemory *memory);
 void ssbu_guest_memory_unbind(void);

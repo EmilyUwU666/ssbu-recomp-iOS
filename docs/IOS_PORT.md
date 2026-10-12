@@ -51,7 +51,19 @@ The existing Windows port in this fork is kept intact.
 - A synthetic main ELF -> import slot -> separately linked `LiftedSDKFixture`
   function test in both the host CLI and the iOS app's runtime probe. This verifies
   the static linking architecture, not game SDK compatibility.
-- A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
+- An **owned multi-arena address space** which adopts loaded mappings, rejects
+  overlapping guest/host ranges, and translates complete accesses using an
+  immutable sorted region table. Generated typed helpers can now dereference
+  relocated imports across caller/provider arenas.
+- **Per-thread bindings** with mutex-protected mapping pins. Closing an owned
+  space fails while any worker is bound; explicit unbind or the pthread-key
+  thread-exit destructor releases the pin. Workers bind explicitly and do not
+  inherit the parent's binding. Borrowed single-arena probes are still supported.
+- End-to-end synthetic function + data imports: provider C reads/writes its own
+  imported data and writes a result back into a different caller arena. Worker
+  tests cover isolation at identical guest VAs, refused teardown, thread-exit
+  cleanup, mapping ownership transfer, overlap rejection and crossing boundaries.
+- A host CLI smoke test, host ThreadSanitizer CI check and ARM64 iOS syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
   an **unsigned iOS ARM64 device app**.
@@ -77,12 +89,13 @@ xcodebuild -project SSBURecompIOS.xcodeproj -scheme SSBURecompIOS \
 On macOS, the synthetic C tests can also run without XcodeGen:
 
 ```sh
-clang -std=c11 -O2 -I runtime \
+clang -std=c11 -pthread -O2 -I runtime \
   ios/Portability/Probe.c ios/Portability/GuestMemory.c \
   ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c \
   ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c \
   ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c \
   ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c \
+  ios/Portability/ProbeAddressSpace.c \
   ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c \
   ios/Portability/ProbeCli.c \
   -o /tmp/ssbu-probe
@@ -153,19 +166,20 @@ synthetic C fixture in `ios/tests/aot_fixture`.
 - **5**: performance evaluation, packaging, and optional device distribution.
 
 The opt-in memory accessor path is **incomplete**: direct guest pointer casts,
-Win32 virtual mappings, cross-module pointers, unwinding, guest SDK calls, and
-guest/memory lifetime management are outside its scope. The ELF loader
+Win32 virtual mappings, unwinding and actual guest SDK calls still need porting.
+Owned multi-arena worker scopes protect mapping lifetime, but production worker
+scheduling/publication and all direct host/runtime pointer casts remain unaudited. The ELF loader
 supports ET_DYN, PT_LOAD and a restricted eager RELA/JMPREL import subset.
 NSO/NRO conversion/metadata integration, GNU-hash-only images, versioned symbols,
 TLS/IFUNC/COPY and packed REL/RELR relocations, symbol interposition, initialization/finalization,
 GPU execution and section permissions are unsupported. The upstream
 `call_indirect`/`host_import` implementation is not yet wired to this registry.
 The registry's dependency callback verifies descriptors, not loaded data arenas:
-the caller must stage dependencies before execution. The binder still translates
-only one arena, so imported data addresses can be relocated but dereferencing
-data across separate arenas requires a future memory-region registry. The current bridge
-terminates on an invalid translated access rather than dereferencing host
-address 0, and the prototype binder must be unbound before memory is freed.
+the caller must stage dependencies before execution. The owned address space
+now translates data across separate arenas and pins their lifetimes per worker.
+The bridge terminates on an invalid translated access rather than dereferencing
+host address 0. Callers using the borrowed single-arena compatibility API must
+still unbind before freeing that mapping.
 
 All claims should be backed by build logs or device captures. In particular,
 successfully compiling one runtime header must not be described as compiling
@@ -210,4 +224,36 @@ weak-null imports, signed addends, cross-module guest-address dispatch, missing
 required symbols/dependencies, bad string/hash/symbol tables, unsupported
 relocations, overflow, malformed dynamic PHDRs, and registry collisions.
 Only original synthetic input is used. Actual Smash main/SDK/fighter modules,
-thread/lifetime management and Apple runtime services remain unverified.
+production worker scheduling and Apple runtime services remain unverified.
+
+## Owned guest address spaces and worker scopes
+
+After staging separate module ELF arenas, pass their owning descriptors to
+`ssbu_guest_address_space_create`. Success moves ownership into the new space
+and clears the input descriptors. It accepts unsorted input, rejects overlapping
+host or guest intervals, and performs no partial ownership transfer on failure.
+Do not retain copied owners or raw host pointers to transferred mappings.
+
+Every worker calls `ssbu_guest_address_space_bind` before using generated memory
+helpers. One thread can bind one space; rebinding requires explicit unbind.
+Bindings do not inherit into new threads. Reads/writes locate the arena from its
+guest VA and validate the entire access; a store cannot span two adjacent arenas.
+Region tables are immutable and lookup does not hold the lifetime mutex while
+performing a guest access. Shared guest-memory data synchronization remains the
+guest runtime's responsibility; mapping pins do not serialize data writes.
+
+Unbind with `ssbu_guest_memory_unbind`; thread exit also releases a binding via
+the pthread-key destructor. `ssbu_guest_address_space_close` returns -1 while
+any binding is active and leaves its handle/mappings intact. The owner must stop
+new bind attempts and synchronize the owning handle before destroying it.
+Join workers before final destruction. This handles already-acquired worker
+scopes, not arbitrary races in publication of a raw address-space pointer.
+Borrowed host pointers are valid only inside the acquiring thread's binding.
+
+Synthetic checks run in the CLI and iOS bootstrap: separately loaded function
+and data imports, caller/provider memory writes, two worker spaces using the
+same guest VA, non-inheritance, active-pin teardown refusal, thread-exit cleanup,
+and guest/host overlap, holes and boundary rejection. Local host tests also
+pass AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer. LeakSanitizer
+is disabled locally due to restricted /proc task inspection. No real game code,
+NSO/NRO module ingestion or Win32 service integration has been validated.

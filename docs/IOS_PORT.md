@@ -9,6 +9,8 @@ The existing Windows port in this fork is kept intact.
 - A C portability probe that includes the **real upstream** `runtime/runtime.h`
   and verifies guest context layout, memory accessors, bit operations,
   SIMD helpers, signed arithmetic, and conversions.
+- An isolated, relocatable guest-memory experiment with bounds checks. The upstream
+  game runtime is **not yet wired to this mapping**, and still dereferences fixed addresses.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen and builds an **unsigned simulator application**.
@@ -32,7 +34,7 @@ xcodebuild -project SSBURecompIOS.xcodeproj -scheme SSBURecompIOS \
 On macOS, the C-only probe can also run without XcodeGen:
 
 ```sh
-clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/ProbeCli.c -o /tmp/ssbu-probe
+clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/ProbeCli.c -o /tmp/ssbu-probe
 /tmp/ssbu-probe
 ```
 
@@ -64,7 +66,7 @@ clang -std=c11 -O2 ios/Portability/Probe.c ios/Portability/ProbeCli.c -o /tmp/ss
 ## Planned verified checkpoints
 
 - **0 — Current**: Xcode bootstrap, shared C helper checks, simulator build.
-- **1**: portable platform abstraction for guest memory and file paths;
+- **1 — Prototype started**: portable platform abstraction for guest memory and file paths;
   tests with generated synthetic guest data (not game code).
 - **2**: AOT game + module linking from an owner's local dump with reproducible
   device-build tooling; resolve symbols, unwind support, and loading.

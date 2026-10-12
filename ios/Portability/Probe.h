@@ -8,6 +8,9 @@ extern "C" {
 /* Returns a bitmask; zero means all checks passed. */
 int ssbu_portability_selftest(void);
 
+/* Tests the isolated, relocatable guest-memory mapping prototype. */
+int ssbu_guest_memory_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

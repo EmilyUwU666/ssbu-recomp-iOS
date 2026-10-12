@@ -3,11 +3,11 @@
 #include "Probe.h"
 
 int main(void) {
-    int failures = ssbu_portability_selftest();
+    int failures = ssbu_portability_selftest() | ssbu_guest_memory_selftest();
     if (failures) {
         fprintf(stderr, "Portability checks failed (bitmask 0x%x)\n", failures);
         return 1;
     }
-    puts("PASS: upstream runtime.h helpers compile and pass portability checks");
+    puts("PASS: runtime helpers and relocatable guest-memory checks pass");
     return 0;
 }

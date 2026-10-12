@@ -10,7 +10,7 @@ struct SSBURecompIOSApp: App {
 }
 
 private struct PortStatusView: View {
-    private let failures = Int(ssbu_portability_selftest())
+    private let failures = Int(ssbu_portability_selftest()) | Int(ssbu_guest_memory_selftest())
 
     var body: some View {
         NavigationStack {
@@ -30,7 +30,7 @@ private struct PortStatusView: View {
                     .foregroundStyle(failures == 0 ? .green : .red)
                     .font(.headline)
 
-                    Text("This app is an early engineering scaffold. It tests portable C helpers from the upstream recompilation runtime. It does not load or run Super Smash Bros. Ultimate.")
+                    Text("This app is an early engineering scaffold. It tests portable C helpers from the upstream recompilation runtime and an experimental relocatable guest-memory mapping. It does not load or run Super Smash Bros. Ultimate.")
                         .fixedSize(horizontal: false, vertical: true)
 
                     Divider()

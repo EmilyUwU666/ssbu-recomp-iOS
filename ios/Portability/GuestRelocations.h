@@ -20,4 +20,13 @@ int ssbu_guest_apply_relative_relocations(SSBUIOSGuestMemory *memory,
                                           const SSBUIOSRelativeRela *records,
                                           size_t count);
 
+/* ELF64 ET_DYN path: r_offset and r_addend are relative to the supplied
+ * load bias, which may differ from the mapping's lowest guest address.
+ * Caller holds exclusive access to both the memory and record table.
+ */
+int ssbu_guest_apply_relative_relocations_bias(SSBUIOSGuestMemory *memory,
+                                               const SSBUIOSRelativeRela *records,
+                                               size_t count,
+                                               uint64_t load_bias);
+
 #endif

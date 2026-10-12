@@ -28,11 +28,13 @@ The existing Windows port in this fork is kept intact.
   synthetic guest function addresses and invokes the statically linked code,
   exercising guest memory writes through address translation.
   This does **not** link or execute actual game code.
-- A bounded synthetic `R_AARCH64_RELATIVE` relocation helper operating on
-  the relocatable guest memory arena, with rejection of unsupported relocation
-  types, invalid destination offsets, and address overflow. Its two-pass
-  validation prevents partial writes for invalid relocation tables; it is
-  not a real NSO/NRO loader.
+- A bounded `R_AARCH64_RELATIVE` relocation helper operating on the relocatable
+  guest memory arena, including explicit ELF load-bias support.
+- A new **synthetic ELF64/AArch64 ET_DYN image loader** that validates program
+  headers, copies `PT_LOAD` data, zero-initializes BSS, inspects `PT_DYNAMIC`
+  for `DT_RELA`, and applies supported relative relocations to a private
+  guest-memory arena. Malformed inputs do not publish a partially loaded image.
+  This is not a complete game/NSO/NRO loader and does not execute ELF code.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -130,9 +132,10 @@ synthetic C fixture in `ios/tests/aot_fixture`.
 
 The opt-in memory accessor path is **incomplete**: direct guest pointer casts,
 Win32 virtual mappings, cross-module pointers, unwinding, guest SDK calls, and
-guest/memory lifetime management are outside its scope. The synthetic
-relocation helper currently supports only one ELF relocation class; executable
-segment loading, imports and other relocation types are not handled. The current bridge
+guest/memory lifetime management are outside its scope. The ELF loader
+currently supports ET_DYN, PT_LOAD and bounded DT_RELA-relative relocations;
+imports, NSO/NRO conversion, other relocation kinds, GPU execution, section
+permissions and executable entry dispatch are unsupported. The current bridge
 terminates on an invalid translated access rather than dereferencing host
 address 0, and the prototype binder must be unbound before memory is freed.
 

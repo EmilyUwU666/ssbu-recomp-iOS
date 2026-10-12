@@ -17,6 +17,9 @@ int ssbu_translated_memory_selftest(void);
 /* Synthetic AArch64 RELATIVE relocation validation with overflow checks. */
 int ssbu_relative_relocation_selftest(void);
 
+/* Original, synthetic ELF64/AArch64 ET_DYN segment + relocation tests. */
+int ssbu_guest_elf_loader_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

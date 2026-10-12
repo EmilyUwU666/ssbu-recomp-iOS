@@ -8,29 +8,51 @@
 
 #include <stdint.h>
 
+static int add_signed(uint64_t base, int64_t offset, uint64_t *value) {
+    if (offset >= 0) {
+        if ((uint64_t)offset > UINT64_MAX - base)
+            return -1;
+        *value = base + (uint64_t)offset;
+    } else {
+        uint64_t magnitude = (uint64_t)(-(offset + 1)) + UINT64_C(1);
+        if (magnitude > base)
+            return -1;
+        *value = base - magnitude;
+    }
+    return 0;
+}
+
 static int relocation_parts(const SSBUIOSGuestMemory *memory,
                             const SSBUIOSRelativeRela *record,
-                            uint64_t *target, uint64_t *value) {
-    if (record->info != SSBU_RELOC_AARCH64_RELATIVE)
+                            uint64_t load_bias, uint64_t *target,
+                            uint64_t *value) {
+    /* Reject symbolic relocations; r_info must be precisely R_AARCH64_RELATIVE. */
+    if (record->info != SSBU_RELOC_AARCH64_RELATIVE ||
+        record->offset > UINT64_MAX - load_bias)
         return -1;
-
-    if (record->offset > UINT64_MAX - memory->guest_base)
-        return -1;
-    *target = memory->guest_base + record->offset;
+    *target = load_bias + record->offset;
     if (!ssbu_guest_memory_translate(memory, *target, sizeof(uint64_t)))
         return -1;
+    return add_signed(load_bias, record->addend, value);
+}
 
-    if (record->addend >= 0) {
-        uint64_t offset = (uint64_t)record->addend;
-        if (offset > UINT64_MAX - memory->guest_base)
+int ssbu_guest_apply_relative_relocations_bias(SSBUIOSGuestMemory *memory,
+                                               const SSBUIOSRelativeRela *records,
+                                               size_t count,
+                                               uint64_t load_bias) {
+    if (!memory || !memory->host || (count && !records))
+        return -1;
+    uint64_t target = 0, value = 0;
+
+    /* Validate the entire immutable input before applying any writes. */
+    for (size_t i = 0; i < count; ++i)
+        if (relocation_parts(memory, &records[i], load_bias, &target, &value))
             return -1;
-        *value = memory->guest_base + offset;
-    } else {
-        /* Avoid negating INT64_MIN (signed overflow). */
-        uint64_t magnitude = (uint64_t)(-(record->addend + 1)) + UINT64_C(1);
-        if (magnitude > memory->guest_base)
+
+    for (size_t i = 0; i < count; ++i) {
+        if (relocation_parts(memory, &records[i], load_bias, &target, &value) ||
+            ssbu_guest_memory_write(memory, target, &value, sizeof(value)))
             return -1;
-        *value = memory->guest_base - magnitude;
     }
     return 0;
 }
@@ -38,21 +60,10 @@ static int relocation_parts(const SSBUIOSGuestMemory *memory,
 int ssbu_guest_apply_relative_relocations(SSBUIOSGuestMemory *memory,
                                           const SSBUIOSRelativeRela *records,
                                           size_t count) {
-    if (!memory || !memory->host || (count && !records))
+    if (!memory)
         return -1;
-    uint64_t target = 0, value = 0;
-
-    /* First pass ensures any invalid later entry cannot partially mutate. */
-    for (size_t i = 0; i < count; ++i)
-        if (relocation_parts(memory, &records[i], &target, &value))
-            return -1;
-
-    for (size_t i = 0; i < count; ++i) {
-        if (relocation_parts(memory, &records[i], &target, &value) ||
-            ssbu_guest_memory_write(memory, target, &value, sizeof(value)))
-            return -1;
-    }
-    return 0;
+    return ssbu_guest_apply_relative_relocations_bias(memory, records, count,
+                                                       memory->guest_base);
 }
 
 int ssbu_relative_relocation_selftest(void) {

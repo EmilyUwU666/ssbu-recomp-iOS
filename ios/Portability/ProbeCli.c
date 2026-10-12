@@ -3,11 +3,11 @@
 #include "Probe.h"
 
 int main(void) {
-    int failures = ssbu_portability_selftest() | ssbu_guest_memory_selftest() | ssbu_translated_memory_selftest() | ssbu_relative_relocation_selftest() | ssbu_guest_elf_loader_selftest();
+    int failures = ssbu_portability_selftest() | ssbu_guest_memory_selftest() | ssbu_translated_memory_selftest() | ssbu_relative_relocation_selftest() | ssbu_guest_elf_loader_selftest() | ssbu_guest_module_import_selftest();
     if (failures) {
         fprintf(stderr, "Portability checks failed (bitmask 0x%x)\n", failures);
         return 1;
     }
-    puts("PASS: runtime helpers, synthetic dispatch, and checked guest relocations and synthetic ELF loading pass");
+    puts("PASS: runtime helpers, synthetic dispatch, and checked guest relocations, synthetic ELF loading, and static module imports pass");
     return 0;
 }

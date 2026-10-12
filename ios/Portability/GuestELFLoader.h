@@ -16,4 +16,28 @@ int ssbu_guest_elf64_load(const unsigned char *file, size_t file_size,
                           uint64_t load_bias,
                           SSBUIOSGuestMemory *arena, uint64_t *guest_entry);
 
+typedef struct {
+    /* Return 0 and a GUEST VA on success, 1 if missing, -1 on error.
+     * A missing weak import becomes zero; strong imports fail. */
+    int (*resolve)(void *context, const char *name, uint64_t *guest_address);
+    /* DT_NEEDED is accepted only if this returns 0. This verifies a registered
+     * dependency; it does not load libraries or execute initializers. */
+    int (*dependency)(void *context, const char *name);
+    void *context;
+} SSBUIOSGuestLinker;
+
+/* Same atomic publication contract, with bounded DT_HASH/DT_SYMTAB/DT_STRTAB
+ * plus eager RELA and JMPREL import relocation. Supports RELATIVE, ABS64,
+ * GLOB_DAT and JUMP_SLOT; all three symbolic kinds use S+A. No lazy binding,
+ * symbol interposition, GNU-hash-only images, TLS, IFUNC or symbol versioning.
+ * Defined symbols use this image's load bias (SHN_ABS stays absolute).
+ * Loader inputs and registry remain immutable; callback side effects are not
+ * rolled back. Caller must prepare dependencies and statically link code.
+ */
+int ssbu_guest_elf64_load_linked(const unsigned char *file, size_t file_size,
+                                 uint64_t load_bias,
+                                 const SSBUIOSGuestLinker *linker,
+                                 SSBUIOSGuestMemory *arena,
+                                 uint64_t *guest_entry);
+
 #endif

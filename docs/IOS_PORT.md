@@ -38,6 +38,19 @@ The existing Windows port in this fork is kept intact.
   statically linked guest dispatcher and updates relocated guest memory
   using the AOT-compiled C fixture. It does not execute the ELF's native
   machine code, and is not a complete game/NSO/NRO loader.
+- An immutable static AOT **module registry** with per-module load biases,
+  sorted function/export tables, exact symbol lookup, dependency-name validation,
+  and rejection of overlapping module ranges, duplicate names/exports,
+  invalid addresses and unsorted function tables.
+- Opt-in **ELF import linking** (`ssbu_guest_elf64_load_linked`) with bounded
+  SysV `DT_HASH` symbol counts, `DT_SYMTAB`/`DT_STRTAB`, eager `DT_JMPREL`,
+  and `R_AARCH64_ABS64`, `GLOB_DAT`, `JUMP_SLOT` and `RELATIVE`. Relocation
+  slots contain guest VAs; only the dispatcher holds native C function pointers.
+  Required missing imports/dependencies fail atomically, unresolved weak imports
+  become zero, and defined/absolute symbols are checked before publication.
+- A synthetic main ELF -> import slot -> separately linked `LiftedSDKFixture`
+  function test in both the host CLI and the iOS app's runtime probe. This verifies
+  the static linking architecture, not game SDK compatibility.
 - A host CLI smoke test and an ARM64 iOS cross-compilation syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
   XcodeGen, builds an **unsigned simulator application**, and separately compiles
@@ -69,7 +82,9 @@ clang -std=c11 -O2 -I runtime \
   ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c \
   ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c \
   ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c \
-  ios/tests/aot_fixture/synthetic_game.c ios/Portability/ProbeCli.c \
+  ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c \
+  ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c \
+  ios/Portability/ProbeCli.c \
   -o /tmp/ssbu-probe
 /tmp/ssbu-probe
 ```
@@ -140,9 +155,15 @@ synthetic C fixture in `ios/tests/aot_fixture`.
 The opt-in memory accessor path is **incomplete**: direct guest pointer casts,
 Win32 virtual mappings, cross-module pointers, unwinding, guest SDK calls, and
 guest/memory lifetime management are outside its scope. The ELF loader
-currently supports ET_DYN, PT_LOAD and bounded DT_RELA-relative relocations;
-imports, NSO/NRO conversion, other relocation kinds, GPU execution, section
-permissions and executable entry dispatch are unsupported. The current bridge
+supports ET_DYN, PT_LOAD and a restricted eager RELA/JMPREL import subset.
+NSO/NRO conversion/metadata integration, GNU-hash-only images, versioned symbols,
+TLS/IFUNC/COPY and packed REL/RELR relocations, symbol interposition, initialization/finalization,
+GPU execution and section permissions are unsupported. The upstream
+`call_indirect`/`host_import` implementation is not yet wired to this registry.
+The registry's dependency callback verifies descriptors, not loaded data arenas:
+the caller must stage dependencies before execution. The binder still translates
+only one arena, so imported data addresses can be relocated but dereferencing
+data across separate arenas requires a future memory-region registry. The current bridge
 terminates on an invalid translated access rather than dereferencing host
 address 0, and the prototype binder must be unbound before memory is freed.
 
@@ -156,3 +177,37 @@ This branch contains no game assets, binaries derived from a game dump,
 console keys, firmware, or redistributed Nintendo content. The game requires
 the user to supply their own lawfully obtained files. Apple TestFlight review,
 code-signing requirements, and intellectual-property restrictions still apply.
+
+## Static module import contract
+
+`SSBUIOSGuestModule` descriptors are original build metadata for prelinked C
+functions. `FnEntry.addr` and `SSBUIOSGuestExport.offset` are module-local ELF
+virtual addresses, rebased by `load_bias` into the declared exclusive guest VA
+interval. Export tables are sorted by exact `strcmp` order; duplicate export
+names across modules are rejected rather than silently selecting one. The
+registry borrows immutable descriptors and never registers downloaded code,
+unloads modules, or owns guest-memory mappings.
+
+Prepare and validate a dependency registry, supply `ssbu_ios_modules_resolve`
+and `ssbu_ios_modules_dependency` as `SSBUIOSGuestLinker` callbacks, and stage
+an ELF with `ssbu_guest_elf64_load_linked`. All relocation values are planned
+before writes, and only a successful complete load publishes the arena/entry.
+Callback side effects are outside the rollback contract; callbacks must use
+immutable tables and return guest addresses, not host pointers.
+
+The symbolic relocation subset uses `S + A` for ABS64, GLOB_DAT and JUMP_SLOT,
+and `load_bias + A` for RELATIVE, following the
+[Arm ELF64 relocation definitions](https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst).
+This is an explicitly restricted platform contract; the upstream Windows host
+currently ignores addends for GLOB_DAT/JUMP_SLOT, so actual Switch module behavior
+still needs verification with local dumps. No lazy PLT resolver or native ELF
+entry execution is implemented. Resolved function VAs must have corresponding
+statically linked Ctx entries before dispatch; data exports may have no function
+entry. The existing `ssbu_guest_elf64_load` wrapper supplies no linker callbacks.
+
+Validation includes function and data imports, local and SHN_ABS definitions,
+weak-null imports, signed addends, cross-module guest-address dispatch, missing
+required symbols/dependencies, bad string/hash/symbol tables, unsupported
+relocations, overflow, malformed dynamic PHDRs, and registry collisions.
+Only original synthetic input is used. Actual Smash main/SDK/fighter modules,
+thread/lifetime management and Apple runtime services remain unverified.

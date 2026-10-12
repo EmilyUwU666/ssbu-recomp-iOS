@@ -20,6 +20,9 @@ int ssbu_relative_relocation_selftest(void);
 /* Original, synthetic ELF64/AArch64 ET_DYN segment + relocation tests. */
 int ssbu_guest_elf_loader_selftest(void);
 
+/* Synthetic main -> import slot -> separate static provider and rejection checks. */
+int ssbu_guest_module_import_selftest(void);
+
 #ifdef __cplusplus
 }
 #endif

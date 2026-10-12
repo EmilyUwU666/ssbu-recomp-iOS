@@ -21,7 +21,8 @@ int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *context);
 
 /* Optional static provider module using reserved GUEST call addresses.
  * No host/native pointer is exposed. Include both descriptors when assembling
- * a registry/runtime; collisions with SDK exports are rejected, not overridden.
+ * a registry/runtime. Collisions with SDK exports require explicit named
+ * provider preferences; strict initialization never overrides automatically.
  * The virtual call interval is not a data mapping and need not be adopted by
  * an address space. Memory-using handlers require a worker memory binding.
  */

@@ -105,6 +105,16 @@ class ModulePreparation(unittest.TestCase):
         self.assertIn('{UINT64_C(0x100), f_100}', offset_source)
         self.assertEqual(prep.c_string(b'"\\\xff9'), '"\\042\\134\\377\\071"')
 
+    def test_definition_eligibility_preserves_visibility_and_binding(self):
+        for info, visibility, expected in [(0x12, 0, 1), (0x22, 0, 1),
+                                            (0x12, 1, 0), (0x12, 2, 0),
+                                            (0x12, 3, 0), (0x02, 0, 0)]:
+            with self.subTest(info=info, visibility=visibility):
+                data = bytearray(elf(True)); data[0x618+4] = info; data[0x618+5] = visibility
+                source, report = prep.prepare(bytes(data), table(SDK), 'sdk', 'sdk', SDK, 'guest', 'fn_table')
+                self.assertEqual(report['preemptible_definition_count'], expected)
+                self.assertIn('ssbu_sdk_preemptible', source)
+
     def test_malformed_elf_symbol_and_bounds_rejection(self):
         mutations = [(18, '<H', 62), (32, '<Q', 4080), (64+40, '<Q', 1),
                      (120+8, '<Q', 0x310), (0x308, '<Q', 0x1800),

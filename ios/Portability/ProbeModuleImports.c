@@ -122,12 +122,12 @@ int ssbu_guest_module_import_selftest(void) {
     };
     SSBUIOSModuleRegistry registry = {0};
     SSBUIOSGuestLinker linker = {ssbu_ios_modules_resolve,
-                                ssbu_ios_modules_dependency, &registry};
+                                ssbu_ios_modules_dependency, &registry, NULL};
     uint64_t entry = 0, pointer = 0;
     int failed = 0;
     CHECK(ssbu_ios_modules_init(&registry, modules, 2) == 0);
     const SSBUIOSModuleSymbols runtime_tables[] = {
-        {"synthetic-main", NULL, 0}, {"synthetic-sdk", NULL, 0}
+        {"synthetic-main", NULL, 0, NULL}, {"synthetic-sdk", NULL, 0, NULL}
     };
     CHECK(ssbu_ios_runtime_create(&runtime, &registry, runtime_tables, 2) == 0);
     CHECK(ssbu_ios_runtime_bind(runtime) == 0);
@@ -185,6 +185,63 @@ int ssbu_guest_module_import_selftest(void) {
     CHECK(ssbu_guest_address_space_close(&space) == 0 && !space);
     ssbu_ios_runtime_unbind();
     CHECK(ssbu_ios_runtime_close(&runtime) == 0 && !runtime);
+
+    /* A default-visible definition may opt into an explicit provider. The
+     * same name exists in both modules; strict registration still rejects it. */
+    const SSBUIOSGuestExport own_data[] = {{"local_data", 0x1800}};
+    const SSBUIOSGuestExport provider_data[] = {
+        {"local_data", 0x1800}, {"sdk_add", 0x100},
+        {"sdk_data", 0x1800}, {"sdk_update", 0x200}
+    };
+    const SSBUIOSProviderPreference data_preference[] = {{"local_data", "synthetic-sdk"}};
+    modules[0].exports = own_data; modules[0].export_count = 1;
+    modules[1].exports = provider_data; modules[1].export_count = 4;
+    CHECK(ssbu_ios_modules_init(&registry, modules, 2) == -1);
+    CHECK(ssbu_ios_modules_init_preferred(&registry, modules, 2, data_preference, 1) == 0);
+    fixture(bytes, sizeof bytes);
+    CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
+          pointer == MAIN_BIAS + 0x17f8); /* no preemption callback: old behavior */
+    ssbu_guest_memory_close(mem);
+    linker.preempt = ssbu_ios_modules_preferred;
+    CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
+          pointer == SDK_BIAS + 0x17f8);
+    ssbu_guest_memory_close(mem);
+    /* Local, internal, hidden and protected definitions never use preference. */
+    for (unsigned visibility = 1; visibility <= 3; ++visibility) {
+        bytes[0x648 + 5] = (unsigned char)visibility;
+        CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
+                                          &linker, mem, &entry) == 0);
+        CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
+              pointer == MAIN_BIAS + 0x17f8);
+        ssbu_guest_memory_close(mem);
+    }
+    bytes[0x648 + 5] = 0; bytes[0x648 + 4] = 0x01; /* LOCAL OBJECT */
+    CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
+          pointer == MAIN_BIAS + 0x17f8);
+    ssbu_guest_memory_close(mem);
+    bytes[0x648 + 4] = 0x21; /* WEAK defined, default visible: eligible */
+    CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 &&
+          pointer == SDK_BIAS + 0x17f8);
+    ssbu_guest_memory_close(mem);
+    put16(bytes + 0x648 + 6, 0xfff1); put64(bytes + 0x648 + 8, 100);
+    CHECK(ssbu_guest_elf64_load_linked(bytes, sizeof bytes, MAIN_BIAS,
+                                      &linker, mem, &entry) == 0);
+    CHECK(ssbu_guest_memory_read(mem, MAIN_BIAS + 0x1210, &pointer, 8) == 0 && pointer == 92);
+    ssbu_guest_memory_close(mem);
+    fixture(bytes, sizeof bytes); linker.preempt = resolver_error;
+    CHECK(rejects(bytes, sizeof bytes, &linker));
+    linker.preempt = NULL;
+    modules[0].exports = NULL; modules[0].export_count = 0;
+    modules[1].exports = sdk_exports; modules[1].export_count = 3;
+    CHECK(ssbu_ios_modules_init(&registry, modules, 2) == 0);
 
     /* An absolute defined symbol does not acquire the image's load bias. */
     put16(bytes + 0x648 + 6, 0xfff1); put64(bytes + 0x648 + 8, 100);

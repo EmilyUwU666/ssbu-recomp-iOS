@@ -45,7 +45,8 @@ int ssbu_ios_runtime_create(SSBUIOSGuestRuntime **out,
     if (!out || *out || !registry || !tables || count != registry->count)
         return -1;
     SSBUIOSModuleRegistry validated = {0};
-    if (ssbu_ios_modules_init(&validated, registry->modules, count)) return -1;
+    if (ssbu_ios_modules_init_preferred(&validated, registry->modules, count,
+                                       registry->preferences, registry->preference_count)) return -1;
     SSBUIOSGuestRuntime *runtime = calloc(1, sizeof *runtime);
     if (!runtime) return -1;
     runtime->tables = calloc(count, sizeof *runtime->tables);
@@ -64,6 +65,9 @@ int ssbu_ios_runtime_create(SSBUIOSGuestRuntime **out,
             const DynSym *s = &tables[i].symbols[j];
             if (!s->name || (!*s->name && (j || s->defined)) ||
                 (s->defined != 0 && s->defined != 1)) goto fail;
+            if (tables[i].preemptible &&
+                (tables[i].preemptible[j] > 1 ||
+                 (tables[i].preemptible[j] && !s->defined))) goto fail;
             if (s->defined && (s->value > UINT64_MAX - module->load_bias ||
                 module->load_bias + s->value < module->guest_start ||
                 module->load_bias + s->value - module->guest_start >= module->guest_size))
@@ -138,9 +142,15 @@ int ssbu_ios_runtime_import(Ctx *context, int index) {
     const DynSym *symbol = &table->symbols[index];
     if (!*symbol->name) return -1;
     uint64_t address = 0;
-    if (symbol->defined) address = binding->active->load_bias + symbol->value;
-    else if (ssbu_ios_modules_resolve(&binding->runtime->registry, symbol->name, &address))
-        return -1;
+    int preferred = 1;
+    if (!symbol->defined || (table->preemptible && table->preemptible[index]))
+        preferred = ssbu_ios_modules_preferred(&binding->runtime->registry, symbol->name, &address);
+    if (preferred == -1) return -1;
+    if (preferred == 1) {
+        if (symbol->defined) address = binding->active->load_bias + symbol->value;
+        else if (ssbu_ios_modules_resolve(&binding->runtime->registry, symbol->name, &address))
+            return -1;
+    }
     /* A data export or missing AOT entry cannot be invoked as a function. */
     const SSBUIOSGuestModule *target_module = NULL;
     void (*function)(Ctx *) = NULL;

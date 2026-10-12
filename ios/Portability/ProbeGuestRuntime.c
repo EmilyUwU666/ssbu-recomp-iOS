@@ -69,8 +69,8 @@ int ssbu_guest_runtime_selftest(void) {
     SSBUIOSModuleRegistry registry = {0};
     /* Deliberately reversed table order; both modules import DIFFERENT index 0. */
     SSBUIOSModuleSymbols tables[] = {
-        {"bridge-sdk", dyn_syms_bridge_sdk, dyn_sym_count_bridge_sdk},
-        {"bridge-main", dyn_syms_bridge_main, dyn_sym_count_bridge_main}
+        {"bridge-sdk", dyn_syms_bridge_sdk, dyn_sym_count_bridge_sdk, NULL},
+        {"bridge-main", dyn_syms_bridge_main, dyn_sym_count_bridge_main, NULL}
     };
     RuntimeWorker w = {.mutex = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
     pthread_t thread = {0}; int started = 0, failed = 0;

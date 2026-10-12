@@ -40,7 +40,7 @@ The existing Windows port in this fork is kept intact.
   machine code, and is not a complete game/NSO/NRO loader.
 - An immutable static AOT **module registry** with per-module load biases,
   sorted function/export tables, exact symbol lookup, dependency-name validation,
-  and rejection of overlapping module ranges, duplicate names/exports,
+  and rejection of overlapping module ranges, duplicate module names/unselected exports,
   invalid addresses and unsorted function tables.
 - Opt-in **ELF import linking** (`ssbu_guest_elf64_load_linked`) with bounded
   SysV `DT_HASH` symbol counts, `DT_SYMTAB`/`DT_STRTAB`, eager `DT_JMPREL`,
@@ -87,6 +87,11 @@ The existing Windows port in this fork is kept intact.
 - Explicit iOS fatal diagnostics for generated guest traps, untranslated
   instructions and unsupported direct kernel SVC. Host subprocess tests verify
   these terminate; no exception/kernel behavior is fabricated.
+- **Explicit named provider preferences** allow selected SDK/host export
+  collisions while preserving strict duplicate rejection by default. Runtime
+  imports and optional ELF definition preemption use the same selection;
+  prepared metadata preserves function-definition eligibility, so protected/
+  local definitions and legacy unflagged runtime definitions stay local.
 - A host CLI smoke test, fatal-diagnostic checks, host ThreadSanitizer CI check
   and ARM64 iOS syntax check.
 - A GitHub Actions macOS runner that generates an Xcode project with
@@ -123,6 +128,7 @@ clang -std=c11 -pthread -O2 -I runtime \
   ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c \
   ios/Portability/ProbeGuestRuntime.c ios/Portability/GuestHostServices.c \
   ios/Portability/GuestDiagnostics.c ios/Portability/ProbeHostServices.c \
+  ios/Portability/ProbeProviderPreferences.c \
   ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c \
   ios/tests/aot_fixture/synthetic_runtime_main.c \
   ios/tests/aot_fixture/synthetic_runtime_sdk.c \
@@ -200,7 +206,7 @@ Owned multi-arena worker scopes protect mapping lifetime, but production worker
 scheduling/publication and all direct host/runtime pointer casts remain unaudited. The ELF loader
 supports ET_DYN, PT_LOAD and a restricted eager RELA/JMPREL import subset.
 NSO/NRO conversion/metadata integration, GNU-hash-only images, versioned symbols,
-TLS/IFUNC/COPY and packed REL/RELR relocations, symbol interposition, initialization/finalization,
+TLS/IFUNC/COPY and packed REL/RELR relocations, automatic symbol interposition, initialization/finalization,
 GPU execution and section permissions are unsupported. The new iOS-only
 `call_indirect`/`host_import` bridge routes through the static module registry;
 the upstream Windows host implementation is unchanged. Actual generated game
@@ -230,7 +236,8 @@ code-signing requirements, and intellectual-property restrictions still apply.
 functions. `FnEntry.addr` and `SSBUIOSGuestExport.offset` are module-local ELF
 virtual addresses, rebased by `load_bias` into the declared exclusive guest VA
 interval. Export tables are sorted by exact `strcmp` order; duplicate export
-names across modules are rejected rather than silently selecting one. The
+names across modules are rejected unless an explicit named provider preference
+covers that exact symbol. There is no automatic weak-definition precedence. The
 registry borrows immutable descriptors and never registers downloaded code,
 unloads modules, or owns guest-memory mappings.
 
@@ -304,7 +311,8 @@ module across calls independently of `Ctx.fn`, which records the most recently
 entered function. A generated `host_import(c, index)` therefore resolves an index
 from the active module's symbol table, even after a nested callback into a
 module whose index namespace differs. Defined symbols use that module's load
-bias; undefined names resolve through the static export registry. Data exports
+bias unless optional eligibility metadata and an explicit preference permit a
+selected provider. Undefined names resolve through the static export registry. Data exports
 and addresses without corresponding AOT function entries cannot be called.
 `Ctx.in_import` and `Ctx.import_from` are restored after normal nested returns.
 
@@ -319,8 +327,9 @@ or a pthread thread-exit destructor releases them. Stop new bind attempts before
 final destruction and join workers, as for address spaces.
 
 Limitations: `DynSym` exposes only name/value/defined, so runtime table definitions
-must supply module-relative symbol values; it does not preserve SHN_ABS,
-weak/type/version metadata. ELF relocation metadata remains separately checked.
+must supply module-relative symbol values. Optional preemptibility bytes preserve
+eligibility for provider selection but do not represent full SHN_ABS/type/version
+metadata. Absent flags keep all defined runtime imports local. ELF relocation metadata remains separately checked.
 A missing weak function is not callable. The optional memory/timing provider is
 available and generated trap/SVC symbols now stop with diagnostics. Most SDK
 services, actual kernel SVC, exception/non-local unwinding and production thread
@@ -432,9 +441,10 @@ not the console's affinity/priority, suspend/resume, deterministic-clock or
 thread scheduling model. No random, heap allocation, string, file or full
 synchronization services are included yet.
 
-Registry export collisions remain errors, including when an actual SDK module
-exports a name also provided here. Select compatible providers/SDK metadata
-explicitly; there is no silent host override/interposition policy. Existing
+Registry export collisions remain errors by default, including when an actual
+SDK module exports a name also provided here. Explicit per-name provider
+preferences now permit selected collisions; there is no silent host override or
+automatic weak/global precedence policy. Existing
 Windows implementations remain unchanged. Actual game use is unverified.
 
 Generated `guest_trap`, `guest_unimpl` and `guest_svc` now link to fatal iOS
@@ -442,3 +452,54 @@ diagnostics. Unsupported kernel calls remain unsupported and abort rather than
 returning fabricated results. This does not implement guest exception unwinding.
 The CLI-only diagnostic modes are tested in subprocesses with core files disabled;
 the normal iOS probe never intentionally executes a fatal diagnostic.
+
+## Explicit provider preferences for SDK/host coexistence
+
+Strict `ssbu_ios_modules_init` is unchanged: duplicate export names are errors.
+For intentional replacement, supply a byte-sorted `SSBUIOSProviderPreference`
+array to `ssbu_ios_modules_init_preferred`, for example:
+
+```c
+const SSBUIOSProviderPreference preferences[] = {
+    {"memcpy", "ios-host-services"},
+    {"memset", "ios-host-services"},
+};
+```
+
+Every preferred module must exist and export the exact name. Duplicate/unsorted
+rules, unknown providers/names and any unlisted export collision fail before
+publishing a registry. Module name and guest-range collisions remain errors.
+Selection is independent of registration order, with no wildcard names,
+first-provider wins, or automatic weak-definition precedence. Preferences and
+strings are borrowed/immutable for the registry and runtime lifetime. The caller
+must ensure the selected implementation's signature and semantics are compatible.
+
+`ssbu_ios_modules_resolve` applies preferences to exported names, including
+undefined ELF/runtime imports. To opt into definition replacement during ELF
+loading, set `SSBUIOSGuestLinker.preempt = ssbu_ios_modules_preferred`.
+Only default-visible GLOBAL/WEAK ordinary definitions use this callback;
+LOCAL, internal, hidden, protected and SHN_ABS definitions keep their original
+values. Omitting the callback preserves prior image-local definition behavior.
+The callback returns 0 for a selected guest VA, 1 for no rule, or -1 on error;
+errors leave the arena/entry outputs unpublished. This is a restricted explicit
+policy, not a complete platform dynamic linker. The visibility boundaries follow
+[ELF symbol visibility](https://gabi.xinuos.com/v42/elf/05-symtab.html).
+
+Runtime `DynSym` has no visibility field. `SSBUIOSModuleSymbols.preemptible` is
+therefore an optional immutable byte per symbol index: 1 authorizes applying a
+preference to that function definition, 0 keeps it local. NULL keeps all defined
+symbols local. Undefined imports still use normal preferred export resolution.
+The preparer emits these bytes only for default-visible GLOBAL/WEAK FUNC
+definitions and NOTYPE definitions corresponding to lifted function entries;
+OBJECT/protected/hidden/internal/local definitions are not authorized. Invalid
+flags or a flag on an undefined symbol are rejected at runtime creation.
+Regenerate metadata/rebuild archives to preserve these rules when using the
+updated portable headers; no inference from symbol names or last-called PCs
+is used.
+
+Tests deliberately register both a synthetic SDK memcpy and the real portable
+provider. They verify default rejection, invalid/unsorted rules, unlisted
+collisions, order-independent selection, undefined and eligible-defined runtime
+calls, local/legacy definitions, preserved ELF visibility/absolute definitions,
+callback failure rollback, and generated eligibility flags. No actual Smash
+SDK replacement or game compatibility has been validated.

@@ -7,6 +7,13 @@ typedef struct {
     const char *module_name;
     const DynSym *symbols; /* Module-local generated symbol indices, not global. */
     size_t symbol_count;
+    /* Optional byte-per-index opt-in for preemptible function definitions.
+     * 1 permits a named preference, 0 preserves module-local definition.
+     * NULL preserves all defined symbols (legacy behavior). Borrowed/immutable.
+     * Undefined symbols always use registry resolution. Generated metadata
+     * sets this only for callable GLOBAL/WEAK default-visible definitions.
+     */
+    const unsigned char *preemptible;
 } SSBUIOSModuleSymbols;
 
 /* Exactly one table per registered module (empty tables are allowed).
@@ -32,7 +39,8 @@ int ssbu_ios_runtime_close(SSBUIOSGuestRuntime **runtime);
  * scope and nested in_import/import_from metadata on normal return.
  * Generated void call_indirect/host_import wrappers abort on errors.
  * Unbind attempted within a running call is ignored. Defined DynSym.value
- * fields must be module-relative VAs; DynSym lacks absolute/type/weak metadata.
+ * fields must be module-relative VAs. Without optional preemptibility metadata,
+ * defined symbols stay local even if a preference exists for their name.
  * Calling missing weak/null functions is an error, not a no-op.
  * Optional service providers use registry modules; full SDK services,
  * unwinding and non-local exits remain unsupported. */

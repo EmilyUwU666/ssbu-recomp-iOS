@@ -145,6 +145,12 @@ static int resolve_symbol(const DynamicTables *d, uint32_t index,
                           u64(sym + 16) ? u64(sym + 16) : 1) ||
         u64(sym + 8) > UINT64_MAX - bias) return -1;
     *value = bias + u64(sym + 8);
+    if (binding && sym[5] == 0 && linker && linker->preempt) {
+        uint64_t preferred = 0;
+        int status = linker->preempt(linker->context, name, &preferred);
+        if (status == 0) *value = preferred;
+        else if (status != 1) return -1;
+    }
     return 0;
 }
 

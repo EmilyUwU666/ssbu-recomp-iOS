@@ -158,6 +158,8 @@ def prepare(data: bytes, table_text: str, module: str, name: str, bias: int,
     require(elf.high <= U64_MAX - bias, "rebased module address overflows")
     functions = lifted_functions(table_text, table_name, bias, address_kind, elf)
     symbols = []
+    preemptible = []
+    function_offsets = {offset for offset, _ in functions}
     exports = {}
     for i in range(elf.symbol_count):
         noff, info, other, section, value, size = struct.unpack_from('<IBBHQQ', elf.symbols, i*24)
@@ -171,6 +173,8 @@ def prepare(data: bytes, table_text: str, module: str, name: str, bias: int,
         elif i:
             require(binding in (1, 2) and other == 0, "invalid undefined symbol")
         symbols.append((symbol_name, value, int(bool(section))))
+        preemptible.append(int(bool(section) and binding in (1, 2) and other == 0 and
+                               (typ == 2 or (typ == 0 and value in function_offsets))))
         if section and binding in (1, 2) and other in (0, 3):
             require(symbol_name not in exports, "duplicate exported symbol name")
             exports[symbol_name] = value
@@ -183,19 +187,22 @@ def prepare(data: bytes, table_text: str, module: str, name: str, bias: int,
     lines += [f'    {{UINT64_C(0x{offset:x}), {symbol}}},' for offset, symbol in functions]
     lines += ['};', f'const DynSym {prefix}_symbols[] = {{']
     lines += [f'    {{{c_string(n)}, UINT64_C(0x{v:x}), {d}}},' for n, v, d in symbols]
-    lines += ['};', f'const SSBUIOSGuestExport {prefix}_exports[] = {{']
+    lines += ['};', f'const unsigned char {prefix}_preemptible[] = {{',
+              '    ' + ', '.join(map(str, preemptible)), '};',
+              f'const SSBUIOSGuestExport {prefix}_exports[] = {{']
     lines += [f'    {{{c_string(n)}, UINT64_C(0x{v:x})}},' for n, v in sorted(exports.items())] or ['    {NULL, 0},']
     cname = c_string(name.encode('utf-8'))
     lines += ['};', f'const SSBUIOSGuestModule {prefix}_module = {{',
               f'    {cname}, UINT64_C(0x{bias:x}), UINT64_C(0x{bias+elf.low:x}), UINT64_C(0x{elf.high-elf.low:x}),',
               f'    {prefix}_functions, {len(functions)}, {prefix}_exports, {len(exports)}', '};',
               f'const SSBUIOSModuleSymbols {prefix}_module_symbols = {{',
-              f'    {cname}, {prefix}_symbols, {len(symbols)}', '};', '']
+              f'    {cname}, {prefix}_symbols, {len(symbols)}, {prefix}_preemptible', '};', '']
     manifest = dict(schema_version=1, module_id=module, module_name=name,
                     elf_sha256=hashlib.sha256(data).hexdigest(), load_bias=hex(bias),
                     guest_start=hex(bias+elf.low), guest_size=hex(elf.high-elf.low),
                     entry_offset=hex(elf.entry), function_count=len(functions),
                     symbol_count=len(symbols), export_count=len(exports),
+                    preemptible_definition_count=sum(preemptible),
                     dependencies=[n.decode('latin-1') for n in elf.dependencies],
                     function_addresses=address_kind, input_function_table=table_name,
                     descriptor_symbol=prefix+'_module', symbols_descriptor=prefix+'_module_symbols')

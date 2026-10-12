@@ -44,7 +44,7 @@ int ssbu_guest_host_services_selftest(void) {
         {"_ZN2nn2os13GetSystemTickEv", 0, 0}
     };
     SSBUIOSModuleSymbols tables[] = {
-        {"host-caller", imports, 3}, ssbu_ios_host_services_symbols
+        {"host-caller", imports, 3, NULL}, ssbu_ios_host_services_symbols
     };
     SSBUIOSModuleRegistry registry = {0};
     unsigned char original[32];

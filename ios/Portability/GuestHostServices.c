@@ -124,4 +124,4 @@ const SSBUIOSGuestModule ssbu_ios_host_services_module = {
     "ios-host-services", SSBU_IOS_HOST_SERVICES_BASE, SSBU_IOS_HOST_SERVICES_BASE,
     0x1000, functions, sizeof functions/sizeof functions[0], exports, sizeof exports/sizeof exports[0]
 };
-const SSBUIOSModuleSymbols ssbu_ios_host_services_symbols = {"ios-host-services", NULL, 0};
+const SSBUIOSModuleSymbols ssbu_ios_host_services_symbols = {"ios-host-services", NULL, 0, NULL};

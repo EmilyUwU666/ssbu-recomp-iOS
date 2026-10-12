@@ -12,9 +12,11 @@ The existing Windows port in this fork is kept intact.
 - An isolated, relocatable guest-memory experiment with bounds checks.
 - An **opt-in** address translation hook in `runtime/runtime.h`. The C accessors
   `rd8/16/32/64`, `wr8/16/32/64`, `rdv/wrv`, and `stx8/16/32/64`
-  now translate guest addresses when compiled with
+  plus the `neon.h` interleaved `v_ldn/v_stn` helpers now translate
+  guest addresses when compiled with
   `SSBU_GUEST_ADDRESS_TRANSLATION`. Without this define, Windows stays unchanged.
-- Synthetic tests of the real `rd/wr/rdv/wrv` helpers against a guest-memory
+- Synthetic tests of the real `rd/wr/rdv/wrv`, SIMD interleaved accessors,
+  and one atomic `STXR` success case against a guest-memory
   mapping. This does **not** make other upstream host/runtime pointer casts safe.
 - A native Metal presentation/clear pass in the iOS bootstrap app. No NVN
   graphics commands or in-game imagery are rendered yet.

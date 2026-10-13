@@ -1,0 +1,6 @@
+SSBURecompIOS.xcodeproj/
+build/
+DerivedData/
+aot-build/
+*.a
+*.xcuserstate

@@ -39,10 +39,22 @@ void guest_trap(const char *what, uint64_t addr);
 void guest_unimpl(uint64_t pc, uint32_t insn, const char *what);
 void guest_svc(Ctx *c, uint32_t number);
 
-/* Guest memory is mapped at its real address: a guest pointer is a host pointer. */
+/* iOS experiment: guest virtual pointers may need translation because Apple's
+ * address space cannot safely be mapped at the Switch's fixed guest addresses.
+ * When disabled, the native Windows runtime keeps its original fast path.
+ * Production integration must also audit every direct cast outside this file.
+ */
+#ifdef SSBU_GUEST_ADDRESS_TRANSLATION
+void *ssbu_guest_host_pointer(uint64_t guest_addr, size_t length);
+#define SSBU_GUEST_PTR(addr, length) ssbu_guest_host_pointer((addr), (length))
+#else
+#define SSBU_GUEST_PTR(addr, length) ((void *)(uintptr_t)(addr))
+#endif
+
+/* Integer and vector reads/writes made by translated guest code. */
 #define DEF_MEM(bits) \
-    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, (void *)(uintptr_t)a, sizeof v); return v; } \
-    static inline void wr##bits(uint64_t a, uint##bits##_t v) { memcpy((void *)(uintptr_t)a, &v, sizeof v); }
+    static inline uint##bits##_t rd##bits(uint64_t a) { uint##bits##_t v; memcpy(&v, SSBU_GUEST_PTR(a, sizeof v), sizeof v); return v; } \
+    static inline void wr##bits(uint64_t a, uint##bits##_t v) { memcpy(SSBU_GUEST_PTR(a, sizeof v), &v, sizeof v); }
 DEF_MEM(8) DEF_MEM(16) DEF_MEM(32) DEF_MEM(64)
 
 /* STXR: store only if the location still holds the value the matching LDXR read. Returns 0 on success. */
@@ -51,15 +63,16 @@ void stx_diag(Ctx *c, uint64_t a, uint64_t expected, uint64_t seen, uint64_t v, 
     static inline uint32_t stx##bits(Ctx *c, uint64_t a, uint##bits##_t v) { \
         if (c->ex_addr != a) { stx_diag(c, a, 0, 0, v, -bits); return 1; } \
         c->ex_addr = ~0ull; \
-        if (__sync_bool_compare_and_swap((uint##bits##_t *)(uintptr_t)a, (uint##bits##_t)c->ex_val, v)) { c->ex_fail = 0; return 0; } \
-        uint##bits##_t seen; memcpy(&seen, (void *)(uintptr_t)a, sizeof seen); \
+        uint##bits##_t *host = (uint##bits##_t *)SSBU_GUEST_PTR(a, sizeof(uint##bits##_t)); \
+        if (__sync_bool_compare_and_swap(host, (uint##bits##_t)c->ex_val, v)) { c->ex_fail = 0; return 0; } \
+        uint##bits##_t seen; memcpy(&seen, host, sizeof seen); \
         stx_diag(c, a, c->ex_val, seen, v, bits); \
         return 1; \
     }
 DEF_STX(8) DEF_STX(16) DEF_STX(32) DEF_STX(64)
 
-static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, (void *)(uintptr_t)a, (size_t)n); return v; }
-static inline void wrv(uint64_t a, const V128 *v, int n) { memcpy((void *)(uintptr_t)a, v, (size_t)n); }
+static inline V128 rdv(uint64_t a, int n) { V128 v; v.d[0] = 0; v.d[1] = 0; memcpy(&v, SSBU_GUEST_PTR(a, (size_t)n), (size_t)n); return v; }
+static inline void wrv(uint64_t a, const V128 *v, int n) { memcpy(SSBU_GUEST_PTR(a, (size_t)n), v, (size_t)n); }
 static inline void vzero(V128 *v) { v->d[0] = 0; v->d[1] = 0; }
 
 static inline uint64_t adds64(Ctx *c, uint64_t a, uint64_t b, uint32_t cin) {

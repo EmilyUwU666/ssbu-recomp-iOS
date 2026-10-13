@@ -26,6 +26,7 @@ nro_bin*/
 *.obj
 *.o
 *.lib
+*.a
 *.pdb
 *.exp
 runtime/sdklift_gen.c

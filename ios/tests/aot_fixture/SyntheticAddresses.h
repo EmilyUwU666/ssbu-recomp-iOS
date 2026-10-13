@@ -1,0 +1,8 @@
+#ifndef SSBU_SYNTHETIC_GUEST_ADDRESSES_H
+#define SSBU_SYNTHETIC_GUEST_ADDRESSES_H
+
+/* Original fixture-only addresses; not actual SSBU function addresses. */
+#define SSBU_SYNTHETIC_INC_ADDR UINT64_C(0x7100001000)
+#define SSBU_SYNTHETIC_DOUBLE_ADDR UINT64_C(0x7100002000)
+
+#endif

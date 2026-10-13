@@ -1,0 +1,110 @@
+name: iOS ARM64 bootstrap
+
+on:
+  push:
+    branches:
+      - main
+      - "ios/**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  portability-and-simulator:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Portable runtime smoke test (macOS)
+        run: |
+          set -euo pipefail
+          xcrun clang -std=c11 -pthread -O2 -Wall -Wextra ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c ios/Portability/ProbeGuestRuntime.c ios/Portability/GuestHostServices.c ios/Portability/GuestDiagnostics.c ios/Portability/ProbeHostServices.c ios/Portability/ProbeHeap.c ios/Portability/ProbeProviderPreferences.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/tests/aot_fixture/synthetic_runtime_main.c ios/tests/aot_fixture/synthetic_runtime_sdk.c ios/Portability/ProbeCli.c -I runtime -o "$RUNNER_TEMP/ssbu-portability-test"
+          "$RUNNER_TEMP/ssbu-portability-test"
+          python3 ios/tests/test_diagnostics.py "$RUNNER_TEMP/ssbu-portability-test"
+
+      - name: Guest worker lifetime and isolation (ThreadSanitizer)
+        run: |
+          set -euo pipefail
+          xcrun clang -std=c11 -pthread -O1 -g -Wall -Wextra -fsanitize=thread ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c ios/Portability/ProbeGuestRuntime.c ios/Portability/GuestHostServices.c ios/Portability/GuestDiagnostics.c ios/Portability/ProbeHostServices.c ios/Portability/ProbeHeap.c ios/Portability/ProbeProviderPreferences.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/tests/aot_fixture/synthetic_runtime_main.c ios/tests/aot_fixture/synthetic_runtime_sdk.c ios/Portability/ProbeCli.c -I runtime -o "$RUNNER_TEMP/ssbu-thread-test"
+          "$RUNNER_TEMP/ssbu-thread-test"
+
+      - name: iOS ARM64 C syntax check
+        run: |
+          set -euo pipefail
+          xcrun --sdk iphoneos clang -std=c11 -arch arm64 -miphoneos-version-min=16.0 -fsyntax-only ios/Portability/Probe.c ios/Portability/GuestMemory.c ios/Portability/GuestRelocations.c ios/Portability/GuestELFLoader.c ios/Portability/ProbeELFLoader.c ios/Portability/GuestMemoryBinding.c ios/Portability/ProbeTranslated.c ios/Portability/GuestDispatch.c ios/Portability/GuestModules.c ios/Portability/ProbeModuleImports.c ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c ios/Portability/ProbeGuestRuntime.c ios/Portability/GuestHostServices.c ios/Portability/GuestDiagnostics.c ios/Portability/ProbeHostServices.c ios/Portability/ProbeHeap.c ios/Portability/ProbeProviderPreferences.c ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c ios/tests/aot_fixture/synthetic_runtime_main.c ios/tests/aot_fixture/synthetic_runtime_sdk.c -I runtime
+
+      - name: AOT compile synthetic lifted code into iOS ARM64 archive
+        run: |
+          set -euo pipefail
+          python3 ios/scripts/compile_generated.py \
+            --generated ios/tests/aot_fixture \
+            --output "$RUNNER_TEMP/ssbu-aot-archive" \
+            --jobs 2
+          test -s "$RUNNER_TEMP/ssbu-aot-archive/libssbu_generated_ios_arm64.a"
+          xcrun --sdk iphoneos ar -t "$RUNNER_TEMP/ssbu-aot-archive/libssbu_generated_ios_arm64.a" | grep -q synthetic_game.o
+
+      - name: Prepare private-path module metadata and compile separate ARM64 archives
+        run: |
+          set -euo pipefail
+          FIXTURE="$RUNNER_TEMP/ssbu-module-fixture"
+          python3 ios/tests/test_prepare_module.py --fixture-dir "$FIXTURE"
+          for MODULE in main sdk; do
+            python3 ios/scripts/compile_generated.py \
+              --generated "$FIXTURE/${MODULE}_gen" \
+              --metadata "$FIXTURE/${MODULE}_metadata.c" \
+              --output "$FIXTURE/${MODULE}_arm64" --jobs 2
+            ARCHIVE="$FIXTURE/${MODULE}_arm64/libssbu_generated_ios_arm64.a"
+            test -s "$ARCHIVE"
+            xcrun --sdk iphoneos ar -t "$ARCHIVE" | grep -q _ssbu_module_metadata.o
+            xcrun --sdk iphoneos nm "$ARCHIVE" | grep -q "_ssbu_${MODULE}_module"
+          done
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios
+          xcodegen generate
+
+      - name: Build unsigned iOS Simulator app
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/SSBURecompIOS.xcodeproj \
+            -scheme SSBURecompIOS \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/ssbu-ios-derived" \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Build unsigned iOS ARM64 device app
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/SSBURecompIOS.xcodeproj \
+            -scheme SSBURecompIOS \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ssbu-ios-device" \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Check linked ARM64 fixture archive
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/ssbu-ios-device/Build/Products/Debug-iphoneos/libSSBULiftedFixture.a"
+          test -s "$ARCHIVE"
+          xcrun --sdk iphoneos nm "$ARCHIVE" | grep -q "_fn_table"
+          xcrun --sdk iphoneos nm "$ARCHIVE" | grep -q "_ssbu_synthetic_lifted_fn"
+          SDK_ARCHIVE="$RUNNER_TEMP/ssbu-ios-device/Build/Products/Debug-iphoneos/libSSBULiftedSDKFixture.a"
+          test -s "$SDK_ARCHIVE"
+          xcrun --sdk iphoneos nm "$SDK_ARCHIVE" | grep -q "_fn_table_synthetic_sdk"
+          RUNTIME_ARCHIVE="$RUNNER_TEMP/ssbu-ios-device/Build/Products/Debug-iphoneos/libSSBULiftedRuntimeFixture.a"
+          test -s "$RUNTIME_ARCHIVE"
+          xcrun --sdk iphoneos nm "$RUNTIME_ARCHIVE" | grep -q "_fn_table_bridge_main"
+          xcrun --sdk iphoneos nm "$RUNTIME_ARCHIVE" | grep -q "_dyn_syms_bridge_sdk"
+
+      - name: Upload simulator-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssbu-recomp-ios-bootstrap-simulator
+          path: ${{ runner.temp }}/ssbu-ios-derived/Build/Products/Debug-iphonesimulator/SSBURecompIOS.app
+          if-no-files-found: error

@@ -12,7 +12,7 @@ int main(int argc, char **argv) {
         else return 2;
         return 99; /* A fatal handler returning normally is an error. */
     }
-    int failures = ssbu_portability_selftest() | ssbu_guest_memory_selftest() | ssbu_translated_memory_selftest() | ssbu_relative_relocation_selftest() | ssbu_guest_elf_loader_selftest() | ssbu_guest_module_import_selftest() | ssbu_guest_address_space_selftest() | ssbu_guest_runtime_selftest() | ssbu_guest_host_services_selftest() | ssbu_guest_provider_preferences_selftest();
+    int failures = ssbu_portability_selftest() | ssbu_guest_memory_selftest() | ssbu_translated_memory_selftest() | ssbu_relative_relocation_selftest() | ssbu_guest_elf_loader_selftest() | ssbu_guest_module_import_selftest() | ssbu_guest_address_space_selftest() | ssbu_guest_runtime_selftest() | ssbu_guest_host_services_selftest() | ssbu_guest_provider_preferences_selftest() | ssbu_guest_heap_selftest();
     if (failures) {
         fprintf(stderr, "Portability checks failed (bitmask 0x%x)\n", failures);
         return 1;

@@ -32,6 +32,9 @@ int ssbu_guest_runtime_selftest(void);
 /* Checked memory/string/integer/timing ABI and guest comparator callbacks. */
 int ssbu_guest_host_services_selftest(void);
 
+/* Bounded shared guest heap, realloc/calloc semantics and worker isolation. */
+int ssbu_guest_heap_selftest(void);
+
 /* Explicit duplicate-export resolution and definition eligibility. */
 int ssbu_guest_provider_preferences_selftest(void);
 

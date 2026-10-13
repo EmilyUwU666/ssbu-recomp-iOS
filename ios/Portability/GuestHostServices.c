@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "GuestHostServices.h"
 #include "GuestAddressSpace.h"
+#include "GuestHeap.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -33,6 +34,33 @@ static int ascii_digit(unsigned char value) {
 static int intervals_overlap(uint64_t a, size_t an, uint64_t b, size_t bn) {
     /* Only called for complete ranges already checked against bound arenas. */
     return a < b + bn && b < a + an;
+}
+static int heap_service(SSBUIOSHostService service, Ctx *c) {
+    if (service == SSBU_HOST_FREE) return ssbu_guest_heap_free(c->x[0]);
+    uint64_t errno_va;
+    if (ssbu_guest_errno_location(&errno_va)) return -1;
+    unsigned char *errno_cell = ssbu_guest_bound_pointer(errno_va, 4);
+    if (!errno_cell) return -1;
+    uint64_t result = 0;
+    int status;
+    uint64_t size = service == SSBU_HOST_REALLOC ? c->x[1] : c->x[0];
+    if (service == SSBU_HOST_CALLOC) {
+        if (c->x[1] && size > SIZE_MAX / c->x[1]) size = SIZE_MAX;
+        else size *= c->x[1];
+    }
+    /* SIZE_MAX cannot be a rounded allocation; route overflow through the
+     * allocator to validate configuration before reporting guest ENOMEM. */
+    if (size > SIZE_MAX) size = SIZE_MAX;
+    status = service == SSBU_HOST_REALLOC ?
+        ssbu_guest_heap_reallocate(c->x[0], (size_t)size, &result) :
+        ssbu_guest_heap_allocate((size_t)size, service == SSBU_HOST_CALLOC, &result);
+    if (status < 0) return -1;
+    if (status) {
+        uint32_t error = SSBU_IOS_GUEST_ENOMEM;
+        memcpy(errno_cell, &error, sizeof error);
+    }
+    c->x[0] = result;
+    return 0;
 }
 static int compare_guest(const Ctx *caller, uint64_t function, uint64_t a,
                          uint64_t b, int32_t *result) {
@@ -285,6 +313,8 @@ static int string_service(SSBUIOSHostService service, Ctx *c) {
 
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *c) {
     if (!c) return -1;
+    if (service >= SSBU_HOST_MALLOC && service <= SSBU_HOST_FREE)
+        return heap_service(service, c);
     if (service == SSBU_HOST_QSORT || service == SSBU_HOST_BSEARCH)
         return algorithm_service(service, c);
     if (service >= SSBU_HOST_ERRNO && service <= SSBU_HOST_STRTOULL)
@@ -395,6 +425,10 @@ ADAPTER(h_strtoul, SSBU_HOST_STRTOUL)
 ADAPTER(h_strtoull, SSBU_HOST_STRTOULL)
 ADAPTER(h_qsort, SSBU_HOST_QSORT)
 ADAPTER(h_bsearch, SSBU_HOST_BSEARCH)
+ADAPTER(h_malloc, SSBU_HOST_MALLOC)
+ADAPTER(h_calloc, SSBU_HOST_CALLOC)
+ADAPTER(h_realloc, SSBU_HOST_REALLOC)
+ADAPTER(h_free, SSBU_HOST_FREE)
 
 static const FnEntry functions[] = {
     {0x100, h_memcpy}, {0x110, h_memmove}, {0x120, h_memset}, {0x130, h_memcmp},
@@ -405,7 +439,8 @@ static const FnEntry functions[] = {
     {0x230, h_strcat}, {0x240, h_strncat}, {0x250, h_strstr}, {0x260, h_strpbrk},
     {0x270, h_strspn}, {0x280, h_strcspn}, {0x290, h_errno}, {0x2a0, h_atoi},
     {0x2b0, h_atol}, {0x2c0, h_atoll}, {0x2d0, h_strtol}, {0x2e0, h_strtoll},
-    {0x2f0, h_strtoul}, {0x300, h_strtoull}, {0x310, h_qsort}, {0x320, h_bsearch}
+    {0x2f0, h_strtoul}, {0x300, h_strtoull}, {0x310, h_qsort}, {0x320, h_bsearch},
+    {0x330, h_malloc}, {0x340, h_calloc}, {0x350, h_realloc}, {0x360, h_free}
 };
 /* Exact upstream nn::os import names, byte-sorted for registry lookup. */
 static const SSBUIOSGuestExport exports[] = {
@@ -419,9 +454,11 @@ static const SSBUIOSGuestExport exports[] = {
     {"__errno_location", 0x290},
     {"atoi", 0x2a0}, {"atol", 0x2b0}, {"atoll", 0x2c0},
     {"bsearch", 0x320},
+    {"calloc", 0x340}, {"free", 0x360}, {"malloc", 0x330},
     {"memchr", 0x140}, {"memcmp", 0x130}, {"memcpy", 0x100},
     {"memmove", 0x110}, {"memset", 0x120},
     {"qsort", 0x310},
+    {"realloc", 0x350},
     {"strcat", 0x230}, {"strchr", 0x210}, {"strcmp", 0x1d0}, {"strcpy", 0x1f0},
     {"strcspn", 0x280}, {"strlen", 0x1b0}, {"strncat", 0x240},
     {"strncmp", 0x1e0}, {"strncpy", 0x200}, {"strnlen", 0x1c0},

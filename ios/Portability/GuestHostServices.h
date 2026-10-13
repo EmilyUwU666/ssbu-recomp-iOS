@@ -6,6 +6,7 @@
 #define SSBU_IOS_TICK_HZ UINT64_C(19200000)
 /* Explicit newlib-style guest ABI; never substitute the host's ERANGE value. */
 #define SSBU_IOS_GUEST_ERANGE 34
+#define SSBU_IOS_GUEST_ENOMEM 12
 #define SSBU_IOS_SORT_SCRATCH_LIMIT ((size_t)64 * 1024 * 1024)
 typedef enum {
     SSBU_HOST_MEMCPY, SSBU_HOST_MEMMOVE, SSBU_HOST_MEMSET,
@@ -18,7 +19,8 @@ typedef enum {
     SSBU_HOST_STRPBRK, SSBU_HOST_STRSPN, SSBU_HOST_STRCSPN,
     SSBU_HOST_ERRNO, SSBU_HOST_ATOI, SSBU_HOST_ATOL, SSBU_HOST_ATOLL,
     SSBU_HOST_STRTOL, SSBU_HOST_STRTOLL, SSBU_HOST_STRTOUL, SSBU_HOST_STRTOULL,
-    SSBU_HOST_QSORT, SSBU_HOST_BSEARCH
+    SSBU_HOST_QSORT, SSBU_HOST_BSEARCH,
+    SSBU_HOST_MALLOC, SSBU_HOST_CALLOC, SSBU_HOST_REALLOC, SSBU_HOST_FREE
 } SSBUIOSHostService;
 
 /* Checked Ctx service ABI. Invalid pointers, unsupported IDs or timing conversion
@@ -48,6 +50,12 @@ typedef enum {
  * Comparators must not modify the array, must return consistently, and cannot
  * exit non-locally. Callback side effects cannot be rolled back. Caller owns
  * array synchronization. Qsort preserves registers; bsearch changes only x0.
+ * Allocating services require an explicitly configured owned guest heap and
+ * bound errno cell outside it. Exhaustion/size overflow returns guest NULL and
+ * writes guest ENOMEM. Successful allocation preserves errno. Allocations are
+ * 16-byte aligned; zero size returns NULL, realloc(p,0) frees p. Failed realloc
+ * preserves the old allocation/data. Free(NULL) is a pointer-free no-op; other
+ * frees require exact live allocation bases and preserve all registers.
  */
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *context);
 

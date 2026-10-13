@@ -1,15 +1,27 @@
 /* Per-worker translation. Owned spaces keep their arenas alive while bound;
  * legacy single-arena bindings remain explicitly borrowed. */
 #include "GuestAddressSpace.h"
+#include "GuestHeap.h"
 
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+typedef struct HeapBlock {
+    uint64_t address;
+    size_t requested, capacity;
+    struct HeapBlock *next;
+} HeapBlock;
 
 struct SSBUIOSGuestAddressSpace {
     SSBUIOSGuestMemory *regions;
     size_t count, bindings;
     pthread_mutex_t mutex;
+    uint64_t heap_address;
+    size_t heap_length;
+    unsigned char *heap_host;
+    HeapBlock *blocks;
 };
 typedef struct {
     SSBUIOSGuestAddressSpace *space;
@@ -105,6 +117,10 @@ int ssbu_guest_address_space_close(SSBUIOSGuestAddressSpace **owner) {
     if (space->bindings) { pthread_mutex_unlock(&space->mutex); return -1; }
     pthread_mutex_unlock(&space->mutex);
     pthread_mutex_destroy(&space->mutex);
+    while (space->blocks) {
+        HeapBlock *block = space->blocks;
+        space->blocks = block->next; free(block);
+    }
     for (size_t i = 0; i < space->count; ++i)
         ssbu_guest_memory_close(&space->regions[i]);
     free(space->regions); free(space); *owner = NULL;
@@ -164,6 +180,9 @@ int ssbu_guest_bound_span(uint64_t address, unsigned char **host, size_t *length
 int ssbu_guest_errno_bind(uint64_t address) {
     if (!address || (address & 3) || !ssbu_guest_bound_pointer(address, 4)) return -1;
     ThreadBinding *binding = pthread_getspecific(binding_key);
+    if (binding->space && binding->space->heap_length &&
+        address < binding->space->heap_address + binding->space->heap_length &&
+        binding->space->heap_address < address + 4) return -1;
     binding->errno_address = address;
     return 0;
 }
@@ -186,6 +205,108 @@ void ssbu_guest_memory_guard_end(void) {
     if (key_ready()) return;
     ThreadBinding *binding = pthread_getspecific(binding_key);
     if (binding && binding->guards) --binding->guards;
+}
+
+int ssbu_guest_address_space_heap(SSBUIOSGuestAddressSpace *space,
+                                  uint64_t address, size_t length) {
+    if (!space || !address || (address & 15) || !length || (length & 15)) return -1;
+    pthread_mutex_lock(&space->mutex);
+    int status = -1;
+    if (!space->bindings && !space->heap_length) {
+        for (size_t i = 0; i < space->count; ++i) {
+            unsigned char *host = ssbu_guest_memory_translate(&space->regions[i], address, length);
+            if (host) {
+                space->heap_address = address; space->heap_length = length; space->heap_host = host;
+                status = 0; break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&space->mutex);
+    return status;
+}
+static SSBUIOSGuestAddressSpace *bound_heap(void) {
+    if (key_ready()) return NULL;
+    const ThreadBinding *binding = pthread_getspecific(binding_key);
+    return binding && binding->space && binding->space->heap_length ? binding->space : NULL;
+}
+static HeapBlock **block_slot(SSBUIOSGuestAddressSpace *space, uint64_t address) {
+    HeapBlock **slot = &space->blocks;
+    while (*slot && (*slot)->address < address) slot = &(*slot)->next;
+    return slot;
+}
+static int allocate_locked(SSBUIOSGuestAddressSpace *space, size_t size, int clear,
+                            uint64_t *result) {
+    if (!size) { *result = 0; return 0; }
+    if (size > SIZE_MAX - 15) return 1;
+    size_t capacity = (size + 15) & ~(size_t)15;
+    if (capacity > space->heap_length) return 1;
+    uint64_t cursor = space->heap_address, end = cursor + space->heap_length;
+    HeapBlock **slot = &space->blocks;
+    for (;;) {
+        uint64_t next = *slot ? (*slot)->address : end;
+        if ((uint64_t)capacity <= next - cursor) break;
+        if (!*slot) return 1;
+        cursor = (*slot)->address + (*slot)->capacity;
+        slot = &(*slot)->next;
+    }
+    HeapBlock *block = malloc(sizeof *block);
+    if (!block) return 1;
+    *block = (HeapBlock){cursor, size, capacity, *slot};
+    if (clear) memset(space->heap_host + (size_t)(cursor - space->heap_address), 0, size);
+    *slot = block; *result = cursor;
+    return 0;
+}
+int ssbu_guest_heap_allocate(size_t size, int clear, uint64_t *result) {
+    SSBUIOSGuestAddressSpace *space = bound_heap();
+    if (!space || !result) return -1;
+    pthread_mutex_lock(&space->mutex);
+    int status = allocate_locked(space, size, clear, result);
+    pthread_mutex_unlock(&space->mutex);
+    return status;
+}
+int ssbu_guest_heap_free(uint64_t address) {
+    if (!address) return 0;
+    SSBUIOSGuestAddressSpace *space = bound_heap();
+    if (!space) return -1;
+    pthread_mutex_lock(&space->mutex);
+    HeapBlock **slot = block_slot(space, address);
+    int status = -1;
+    if (*slot && (*slot)->address == address) {
+        HeapBlock *block = *slot; *slot = block->next; free(block); status = 0;
+    }
+    pthread_mutex_unlock(&space->mutex);
+    return status;
+}
+int ssbu_guest_heap_reallocate(uint64_t old_address, size_t size, uint64_t *result) {
+    if (!old_address) return ssbu_guest_heap_allocate(size, 0, result);
+    SSBUIOSGuestAddressSpace *space = bound_heap();
+    if (!space || !result) return -1;
+    pthread_mutex_lock(&space->mutex);
+    HeapBlock **slot = block_slot(space, old_address), *old = *slot;
+    int status = -1;
+    if (!old || old->address != old_address) goto done;
+    if (!size) { *slot = old->next; free(old); *result = 0; status = 0; goto done; }
+    status = 1;
+    if (size > SIZE_MAX - 15) goto done;
+    size_t capacity = (size + 15) & ~(size_t)15;
+    uint64_t next = old->next ? old->next->address : space->heap_address + space->heap_length;
+    if ((uint64_t)capacity <= next - old_address) {
+        old->capacity = capacity; old->requested = size;
+        *result = old_address; status = 0; goto done;
+    }
+    uint64_t replacement;
+    status = allocate_locked(space, size, 0, &replacement);
+    if (!status) {
+        size_t copy = old->requested < size ? old->requested : size;
+        memcpy(space->heap_host + (size_t)(replacement - space->heap_address),
+               space->heap_host + (size_t)(old_address - space->heap_address), copy);
+        /* Insertion may have changed the predecessor, so find the old link again. */
+        slot = block_slot(space, old_address); *slot = old->next; free(old);
+        *result = replacement;
+    }
+done:
+    pthread_mutex_unlock(&space->mutex);
+    return status;
 }
 
 void *ssbu_guest_host_pointer(uint64_t address, size_t length) {

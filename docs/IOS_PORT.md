@@ -84,6 +84,10 @@ The existing Windows port in this fork is kept intact.
   memmove, memset, memcmp and memchr, fourteen checked string functions, plus nn::os tick/frequency/conversion,
   sleep and yield imports. The provider uses reserved guest function addresses
   and the same runtime import scopes; native data pointers are never returned.
+- An explicitly reserved, owned **shared guest heap** with aligned malloc,
+  zeroing calloc, data-preserving realloc and exact-base free imports. Metadata
+  and allocator operations are mutex-protected; worker errno cells stay outside
+  the heap, with guest ENOMEM reporting and concurrent allocation probes.
 - Explicit iOS fatal diagnostics for generated guest traps, untranslated
   instructions and unsupported direct kernel SVC. Host subprocess tests verify
   these terminate; no exception/kernel behavior is fabricated.
@@ -128,6 +132,7 @@ clang -std=c11 -pthread -O2 -I runtime \
   ios/Portability/ProbeAddressSpace.c ios/Portability/GuestRuntime.c \
   ios/Portability/ProbeGuestRuntime.c ios/Portability/GuestHostServices.c \
   ios/Portability/GuestDiagnostics.c ios/Portability/ProbeHostServices.c \
+  ios/Portability/ProbeHeap.c \
   ios/Portability/ProbeProviderPreferences.c \
   ios/tests/aot_fixture/synthetic_game.c ios/tests/aot_fixture/synthetic_sdk.c \
   ios/tests/aot_fixture/synthetic_runtime_main.c \
@@ -330,7 +335,7 @@ Limitations: `DynSym` exposes only name/value/defined, so runtime table definiti
 must supply module-relative symbol values. Optional preemptibility bytes preserve
 eligibility for provider selection but do not represent full SHN_ABS/type/version
 metadata. Absent flags keep all defined runtime imports local. ELF relocation metadata remains separately checked.
-A missing weak function is not callable. The optional memory/timing provider is
+A missing weak function is not callable. The optional portable host provider is
 available and generated trap/SVC symbols now stop with diagnostics. Most SDK
 services, actual kernel SVC, exception/non-local unwinding and production thread
 scheduling remain unfinished.
@@ -509,13 +514,44 @@ inside calls already are. Guards nest, and failure paths release them. Owned
 address spaces cannot close while bound. Borrowed legacy mappings must still
 be kept alive by their owner; guards cannot prevent direct owner misuse.
 
+Malloc/calloc/realloc/free imports use an explicit bounded guest heap, configured
+with `ssbu_guest_address_space_heap(space, guest_address, byte_length)` once
+before any worker binds. The caller reserves a nonzero, 16-byte-aligned interval
+whose length is a positive multiple of 16 within one owned arena. This interval
+must be separate from module data, stacks, TLS and errno cells. Configuration
+changes no guest bytes. The heap belongs to the address space and can be shared
+by its workers; guest errno binding rejects cells overlapping its interval.
+
+Allocations return 16-byte-aligned guest addresses. A mutex protects sorted,
+host-only allocation records, first-fit gap reuse, zeroing and realloc copies.
+Free removes an exact live allocation base; interior pointers and double frees
+fail the checked call. Realloc may shrink/grow in place or move while preserving
+the smaller of the old/new requested sizes. Failure preserves the original
+allocation and data. Zero-size malloc/calloc returns NULL; realloc(p,0) frees p
+and returns NULL. Free(NULL) is a no-op, even without a memory binding.
+
+Allocating services require a bound worker errno cell outside the heap. Normal
+exhaustion, allocation-metadata failure and size/product overflow return guest
+NULL and set explicit newlib-style guest ENOMEM (12); successful allocations
+preserve errno. Missing heap/errno setup or invalid frees/realloc pointers fail
+without service writes. Heap storage does not grow automatically, and borrowed
+single-arena bindings do not provide a heap. Address-space teardown releases all
+allocation metadata with its mappings after workers unbind or exit.
+
+This allocator does not provide C++ new/delete, console heap handles, page
+commit/decommit, stack/TLS reservation or allocation-level translation bounds.
+Freed addresses can still translate inside the arena, so use-after-free and
+out-of-allocation accesses remain guest bugs. Callers synchronize concurrent
+access to their allocation data; the allocator mutex covers only allocator
+operations. Physical SDK heap/errno compatibility remains unverified.
+
 Tick frequency matches upstream's 19,200,000 Hz. Tick reads use host
 CLOCK_MONOTONIC; integer signed conversions truncate toward zero and reject
 unrepresentable results. Sleep uses nanosleep with remaining-time retries after
 EINTR; nonpositive durations and YieldThread use the host scheduler's yield.
 Void sleep/yield calls preserve registers. This is a host timing implementation,
 not the console's affinity/priority, suspend/resume, deterministic-clock or
-thread scheduling model. No random, heap allocation, file or full
+thread scheduling model. No random, file or full
 synchronization services are included yet.
 
 Registry export collisions remain errors by default, including when an actual

@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <sched.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -32,6 +33,81 @@ static int ascii_digit(unsigned char value) {
 static int intervals_overlap(uint64_t a, size_t an, uint64_t b, size_t bn) {
     /* Only called for complete ranges already checked against bound arenas. */
     return a < b + bn && b < a + an;
+}
+static int compare_guest(const Ctx *caller, uint64_t function, uint64_t a,
+                         uint64_t b, int32_t *result) {
+    Ctx callback;
+    memcpy(&callback, caller, sizeof callback);
+    callback.x[0] = a; callback.x[1] = b;
+    if (ssbu_ios_runtime_call(&callback, function)) return -1;
+    uint32_t bits = (uint32_t)callback.x[0];
+    memcpy(result, &bits, sizeof *result);
+    return 0;
+}
+static int algorithm_service(SSBUIOSHostService service, Ctx *c) {
+    int searching = service == SSBU_HOST_BSEARCH;
+    uint64_t base = c->x[searching ? 1 : 0];
+    uint64_t count64 = c->x[searching ? 2 : 1], size64 = c->x[searching ? 3 : 2];
+    uint64_t comparator = c->x[searching ? 4 : 3];
+    if (!count64) { if (searching) c->x[0] = 0; return 0; }
+    if (!size64 || count64 > SIZE_MAX || size64 > SIZE_MAX || count64 > SIZE_MAX / size64)
+        return -1;
+    size_t count = (size_t)count64, size = (size_t)size64, bytes = count * size;
+    unsigned char *array = ssbu_guest_bound_pointer(base, bytes);
+    if (!array || (searching && !ssbu_guest_bound_pointer(c->x[0], 1))) return -1;
+    if (!searching && count == 1) return 0;
+    if (ssbu_guest_memory_guard_begin()) return -1;
+    int status = -1;
+    unsigned char *snapshot = NULL;
+    size_t *indices = NULL, *work = NULL;
+    if (searching) {
+        size_t low = 0, high = count;
+        uint64_t found = 0;
+        while (low < high) {
+            size_t mid = low + (high - low) / 2;
+            int32_t result;
+            if (compare_guest(c, comparator, c->x[0], base + mid * size, &result)) goto done;
+            if (!result) { found = base + mid * size; break; }
+            if (result < 0) high = mid;
+            else low = mid + 1;
+        }
+        c->x[0] = found; status = 0; goto done;
+    }
+    if (bytes > SSBU_IOS_SORT_SCRATCH_LIMIT ||
+        count > (SSBU_IOS_SORT_SCRATCH_LIMIT - bytes) / (2 * sizeof(size_t))) goto done;
+    snapshot = malloc(bytes);
+    indices = malloc(count * sizeof *indices);
+    work = malloc(count * sizeof *work);
+    if (!snapshot || !indices || !work) goto done;
+    memcpy(snapshot, array, bytes);
+    for (size_t i = 0; i < count; ++i) indices[i] = i;
+    /* Bottom-up mergesort of indices; all comparator pointers still identify
+     * actual elements in the guest array, which has not been rearranged. */
+    for (size_t width = 1; width < count; width = width > count / 2 ? count : width * 2) {
+        for (size_t left = 0; left < count;) {
+            size_t mid = left + (width < count - left ? width : count - left);
+            size_t right = mid + (width < count - mid ? width : count - mid);
+            size_t a = left, b = mid, out = left;
+            while (a < mid && b < right) {
+                int32_t result;
+                if (compare_guest(c, comparator, base + indices[a] * size,
+                                  base + indices[b] * size, &result)) goto done;
+                work[out++] = result <= 0 ? indices[a++] : indices[b++];
+            }
+            while (a < mid) work[out++] = indices[a++];
+            while (b < right) work[out++] = indices[b++];
+            left = right;
+        }
+        size_t *swap = indices; indices = work; work = swap;
+    }
+    if (memcmp(array, snapshot, bytes)) goto done;
+    for (size_t i = 0; i < count; ++i)
+        memcpy(array + i * size, snapshot + indices[i] * size, size);
+    status = 0;
+done:
+    free(work); free(indices); free(snapshot);
+    ssbu_guest_memory_guard_end();
+    return status;
 }
 static int integer_service(SSBUIOSHostService service, Ctx *c) {
     uint64_t errno_va;
@@ -209,6 +285,8 @@ static int string_service(SSBUIOSHostService service, Ctx *c) {
 
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *c) {
     if (!c) return -1;
+    if (service == SSBU_HOST_QSORT || service == SSBU_HOST_BSEARCH)
+        return algorithm_service(service, c);
     if (service >= SSBU_HOST_ERRNO && service <= SSBU_HOST_STRTOULL)
         return integer_service(service, c);
     if (service >= SSBU_HOST_STRLEN && service <= SSBU_HOST_STRRCHR)
@@ -315,6 +393,8 @@ ADAPTER(h_strtol, SSBU_HOST_STRTOL)
 ADAPTER(h_strtoll, SSBU_HOST_STRTOLL)
 ADAPTER(h_strtoul, SSBU_HOST_STRTOUL)
 ADAPTER(h_strtoull, SSBU_HOST_STRTOULL)
+ADAPTER(h_qsort, SSBU_HOST_QSORT)
+ADAPTER(h_bsearch, SSBU_HOST_BSEARCH)
 
 static const FnEntry functions[] = {
     {0x100, h_memcpy}, {0x110, h_memmove}, {0x120, h_memset}, {0x130, h_memcmp},
@@ -325,7 +405,7 @@ static const FnEntry functions[] = {
     {0x230, h_strcat}, {0x240, h_strncat}, {0x250, h_strstr}, {0x260, h_strpbrk},
     {0x270, h_strspn}, {0x280, h_strcspn}, {0x290, h_errno}, {0x2a0, h_atoi},
     {0x2b0, h_atol}, {0x2c0, h_atoll}, {0x2d0, h_strtol}, {0x2e0, h_strtoll},
-    {0x2f0, h_strtoul}, {0x300, h_strtoull}
+    {0x2f0, h_strtoul}, {0x300, h_strtoull}, {0x310, h_qsort}, {0x320, h_bsearch}
 };
 /* Exact upstream nn::os import names, byte-sorted for registry lookup. */
 static const SSBUIOSGuestExport exports[] = {
@@ -338,8 +418,10 @@ static const SSBUIOSGuestExport exports[] = {
     {"__errno", 0x290},
     {"__errno_location", 0x290},
     {"atoi", 0x2a0}, {"atol", 0x2b0}, {"atoll", 0x2c0},
+    {"bsearch", 0x320},
     {"memchr", 0x140}, {"memcmp", 0x130}, {"memcpy", 0x100},
     {"memmove", 0x110}, {"memset", 0x120},
+    {"qsort", 0x310},
     {"strcat", 0x230}, {"strchr", 0x210}, {"strcmp", 0x1d0}, {"strcpy", 0x1f0},
     {"strcspn", 0x280}, {"strlen", 0x1b0}, {"strncat", 0x240},
     {"strncmp", 0x1e0}, {"strncpy", 0x200}, {"strnlen", 0x1c0},

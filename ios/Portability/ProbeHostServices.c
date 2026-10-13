@@ -45,6 +45,158 @@ static int unchanged_error(SSBUIOSHostService service, Ctx *c) {
     return ssbu_ios_host_service(service, c) == -1 && !memcmp(c, &before, sizeof before);
 }
 
+static int word_order(uint64_t a, uint64_t b) {
+    uint32_t ab = rd32(a), bb = rd32(b);
+    int32_t av, bv; memcpy(&av, &ab, 4); memcpy(&bv, &bb, 4);
+    return (av > bv) - (av < bv);
+}
+static void plain_compare(Ctx *c) {
+    int result = word_order(c->x[0], c->x[1]);
+    c->x[0] = UINT64_C(0xabcdef0000000000) | (uint32_t)result;
+}
+static void imported_compare(Ctx *c) {
+    int result = word_order(c->x[0], c->x[1]);
+    const char *scope = c->in_import; uint64_t from = c->import_from;
+    c->x[2] = 4; c->x[30] = BASE + 0x108;
+    host_import(c, 0); /* This comparator module's index zero is memcmp. */
+    if (c->in_import != scope || c->import_from != from) wr32(DATA + 980, 1);
+    ssbu_guest_memory_unbind(); ssbu_ios_runtime_unbind(); /* Ignored inside callback. */
+    if (!ssbu_guest_bound_pointer(DATA + 1024, 4)) guest_trap("callback lost memory pin", BASE);
+    /* The service uses a copy, so even these clobbers cannot leak to caller. */
+    c->x[19] = 99; c->x[30] = 77; c->x[31] = 55; c->Z = 42;
+    c->x[0] = UINT64_C(0xabcdef0000000000) | (uint32_t)result;
+    wr32(DATA + 984, rd32(DATA + 984) + 1);
+}
+static void nested_compare(Ctx *c) {
+    Ctx inner; memcpy(&inner, c, sizeof inner);
+    inner.x[0] = DATA + 1100; inner.x[1] = 3; inner.x[2] = 4;
+    inner.x[3] = BASE + 0x200; inner.x[30] = BASE + 0x308;
+    host_import(&inner, 1); /* Re-enter qsort on a disjoint array. */
+    if (rd32(DATA + 1100) != 1 || rd32(DATA + 1104) != 2 || rd32(DATA + 1108) != 3)
+        wr32(DATA + 980, 1);
+    imported_compare(c);
+}
+static void mutating_compare(Ctx *c) { wr8(c->x[0], rd8(c->x[0]) ^ 0x80); c->x[0] = 0; }
+static void algorithm_caller(Ctx *c) {
+    uint64_t lr = c->x[30];
+    c->x[30] = BASE + 0x508; host_import(c, 1);
+    c->x[0] = DATA + 1000; c->x[1] = DATA + 1024; c->x[2] = 9;
+    c->x[3] = 4; c->x[4] = BASE + 0x100;
+    c->x[30] = BASE + 0x50c; host_import(c, 2); c->x[10] = c->x[0];
+    c->x[0] = DATA + 1024; c->x[1] = DATA + 1200; c->x[2] = 36;
+    c->x[30] = BASE + 0x510; host_import(c, 0); c->x[11] = c->x[0];
+    c->x[30] = lr;
+}
+static int host_word_compare(const void *a, const void *b) {
+    int32_t x, y; memcpy(&x, a, 4); memcpy(&y, b, 4);
+    return (x > y) - (x < y);
+}
+static int algorithm_selftest(void) {
+    SSBUIOSGuestMemory arenas[3] = {{0}};
+    SSBUIOSGuestAddressSpace *space = NULL;
+    SSBUIOSGuestRuntime *runtime = NULL;
+    const FnEntry functions[] = {{0x100, imported_compare}, {0x200, plain_compare},
+        {0x300, nested_compare}, {0x400, mutating_compare}, {0x500, algorithm_caller}};
+    SSBUIOSGuestModule modules[] = {
+        {"algorithm-caller", BASE, BASE, 4096, functions, 5, NULL, 0}, ssbu_ios_host_services_module};
+    const DynSym imports[] = {{"memcmp", 0, 0}, {"qsort", 0, 0}, {"bsearch", 0, 0}};
+    SSBUIOSModuleSymbols tables[] = {{"algorithm-caller", imports, 3, NULL}, ssbu_ios_host_services_symbols};
+    SSBUIOSModuleRegistry registry = {0};
+    int failed = 0;
+    CHECK(ssbu_ios_modules_init(&registry, modules, 2) == 0);
+    CHECK(ssbu_ios_runtime_create(&runtime, &registry, tables, 2) == 0);
+    CHECK(ssbu_guest_memory_open(&arenas[0], BASE, 4096) == 0);
+    CHECK(ssbu_guest_memory_open(&arenas[1], DATA, 4096) == 0);
+    CHECK(ssbu_guest_memory_open(&arenas[2], DATA + 0x100000, SSBU_IOS_SORT_SCRATCH_LIMIT) == 0);
+    CHECK(ssbu_guest_address_space_create(&space, arenas, 3) == 0);
+    CHECK(ssbu_guest_address_space_bind(space) == 0 && ssbu_ios_runtime_bind(runtime) == 0);
+    CHECK(ssbu_guest_memory_guard_begin() == 0 && ssbu_guest_memory_guard_begin() == 0);
+    ssbu_guest_memory_unbind();
+    CHECK(ssbu_guest_bound_pointer(DATA, 4) != NULL);
+    ssbu_guest_memory_guard_end(); ssbu_guest_memory_unbind();
+    CHECK(ssbu_guest_bound_pointer(DATA, 4) != NULL);
+    ssbu_guest_memory_guard_end();
+    const int32_t original[] = {9, -1, 4, 4, INT32_MIN, 0, INT32_MAX, 2, -9};
+    int32_t expected[9]; memcpy(expected, original, sizeof expected);
+    qsort(expected, 9, 4, host_word_compare);
+    memcpy(ssbu_guest_bound_pointer(DATA + 1024, sizeof original), original, sizeof original);
+    memcpy(ssbu_guest_bound_pointer(DATA + 1200, sizeof expected), expected, sizeof expected);
+    wr32(DATA + 1000, 4); wr32(DATA + 1100, 3); wr32(DATA + 1104, 2); wr32(DATA + 1108, 1);
+    Ctx c = {0}; c.x[0] = DATA + 1024; c.x[1] = 9; c.x[2] = 4; c.x[3] = BASE + 0x300;
+    c.x[19] = 19; c.x[30] = BASE + 0x900; c.x[31] = DATA + 4000;
+    c.in_import = "algorithm-outer"; c.import_from = 123;
+    CHECK(ssbu_ios_runtime_call(&c, BASE + 0x500) == 0);
+    CHECK(c.x[10] >= DATA + 1024 && c.x[10] < DATA + 1060 && rd32(c.x[10]) == 4 && c.x[11] == 0);
+    CHECK(c.x[19] == 19 && c.x[30] == BASE + 0x900 && c.x[31] == DATA + 4000 && c.Z == 0);
+    CHECK(!strcmp(c.in_import, "algorithm-outer") && c.import_from == 123);
+    CHECK(rd32(DATA + 980) == 0 && rd32(DATA + 984) > 0);
+    /* Differential sorting covers singleton, odd lengths, duplicates, extremes
+     * and reverse/random orders, independently of the chosen sorting algorithm. */
+    uint32_t seed = 7;
+    for (size_t count = 0; count <= 64; ++count) {
+        int32_t values[64], reference[64];
+        for (size_t i = 0; i < count; ++i) {
+            seed = seed * 1664525 + 1013904223;
+            values[i] = (int32_t)(seed % 31) - 15;
+        }
+        memcpy(reference, values, count * 4); qsort(reference, count, 4, host_word_compare);
+        memcpy(ssbu_guest_bound_pointer(DATA + 1024, count * 4), values, count * 4);
+        c.x[0] = DATA + 1024; c.x[1] = count; c.x[2] = 4; c.x[3] = BASE + 0x200;
+        Ctx before; memcpy(&before, &c, sizeof before);
+        CHECK(ssbu_ios_host_service(SSBU_HOST_QSORT, &c) == 0 && !memcmp(&c, &before, sizeof c));
+        CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 1024, count * 4), reference, count * 4));
+    }
+    /* An array element can be larger than the key; callbacks inspect the key
+     * structure, rather than requiring element-size bytes at the key pointer. */
+    for (unsigned i = 0; i < 12; ++i) {
+        wr32(DATA + 1024 + i * 8, (11 - i) * 2); wr32(DATA + 1028 + i * 8, 0xa500 + 11 - i);
+    }
+    c.x[0] = DATA + 1024; c.x[1] = 12; c.x[2] = 8; c.x[3] = BASE + 0x200;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_QSORT, &c) == 0);
+    for (unsigned i = 0; i < 12; ++i)
+        CHECK(rd32(DATA + 1024 + i * 8) == i * 2 && rd32(DATA + 1028 + i * 8) == 0xa500 + i);
+    for (unsigned key = 0; key <= 24; ++key) {
+        wr32(BASE + 4092, key);
+        c.x[0] = BASE + 4092; c.x[1] = DATA + 1024; c.x[2] = 12; c.x[3] = 8; c.x[4] = BASE + 0x200;
+        Ctx before; memcpy(&before, &c, sizeof before);
+        CHECK(ssbu_ios_host_service(SSBU_HOST_BSEARCH, &c) == 0);
+        CHECK(c.x[0] == (key < 24 && !(key & 1) ? DATA + 1024 + key / 2 * 8 : 0));
+        before.x[0] = c.x[0]; CHECK(!memcmp(&c, &before, sizeof c));
+    }
+    unsigned char saved[96]; memcpy(saved, ssbu_guest_bound_pointer(DATA + 1024, 96), 96);
+    c.x[0] = UINT64_MAX; c.x[1] = DATA + 1024; c.x[2] = 12; c.x[3] = 8; c.x[4] = BASE + 0x200;
+    CHECK(unchanged_error(SSBU_HOST_BSEARCH, &c));
+    c.x[0] = BASE + 4092; c.x[4] = BASE + 0x999;
+    CHECK(unchanged_error(SSBU_HOST_BSEARCH, &c));
+    c.x[2] = UINT64_MAX; CHECK(unchanged_error(SSBU_HOST_BSEARCH, &c));
+    c.x[0] = DATA + 1024; c.x[1] = 12; c.x[2] = 8; c.x[3] = BASE + 0x999;
+    CHECK(unchanged_error(SSBU_HOST_QSORT, &c) && !memcmp(saved, ssbu_guest_bound_pointer(DATA + 1024, 96), 96));
+    c.x[1] = UINT64_MAX; CHECK(unchanged_error(SSBU_HOST_QSORT, &c));
+    c.x[1] = 12; c.x[2] = 0; CHECK(unchanged_error(SSBU_HOST_QSORT, &c));
+    c.x[0] = DATA + 4092; c.x[2] = 8; CHECK(unchanged_error(SSBU_HOST_QSORT, &c));
+    c.x[0] = DATA + 0x100000; c.x[1] = SSBU_IOS_SORT_SCRATCH_LIMIT / 8;
+    CHECK(unchanged_error(SSBU_HOST_QSORT, &c)); /* Valid mapping, oversized scratch. */
+    c.x[0] = DATA + 1024; c.x[1] = 2; c.x[2] = 8; c.x[3] = BASE + 0x400;
+    CHECK(unchanged_error(SSBU_HOST_QSORT, &c)); /* Callback's mutation is not rolled back. */
+    CHECK(memcmp(saved, ssbu_guest_bound_pointer(DATA + 1024, 96), 96) != 0);
+    c.x[0] = UINT64_MAX; c.x[1] = UINT64_MAX; c.x[2] = 0; c.x[3] = UINT64_MAX; c.x[4] = 0;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_BSEARCH, &c) == 0 && c.x[0] == 0);
+    c.x[0] = UINT64_MAX; c.x[1] = 0;
+    Ctx before; memcpy(&before, &c, sizeof before);
+    CHECK(ssbu_ios_host_service(SSBU_HOST_QSORT, &c) == 0 && !memcmp(&c, &before, sizeof c));
+    ssbu_ios_runtime_unbind();
+    c.x[0] = DATA + 1024; c.x[1] = 2; c.x[2] = 8; c.x[3] = BASE + 0x200;
+    CHECK(unchanged_error(SSBU_HOST_QSORT, &c));
+    ssbu_guest_memory_unbind(); /* Every failure must release its guard. */
+    CHECK(ssbu_guest_bound_pointer(DATA + 1024, 4) == NULL);
+done:
+    ssbu_ios_runtime_unbind(); ssbu_guest_memory_unbind();
+    if (ssbu_ios_runtime_close(&runtime)) failed = 1;
+    if (ssbu_guest_address_space_close(&space)) failed = 1;
+    for (unsigned i = 0; i < 3; ++i) ssbu_guest_memory_close(&arenas[i]);
+    return failed;
+}
+
 int ssbu_guest_host_services_selftest(void) {
     SSBUIOSGuestMemory arenas[2] = {{0}};
     SSBUIOSGuestAddressSpace *space = NULL;
@@ -66,6 +218,7 @@ int ssbu_guest_host_services_selftest(void) {
     unsigned char original[32];
     for (unsigned i = 0; i < sizeof original; ++i) original[i] = (unsigned char)i;
     int failed = 0;
+    CHECK(algorithm_selftest() == 0);
     CHECK(ssbu_ios_modules_init(&registry, modules, 2) == 0);
     CHECK(ssbu_ios_runtime_create(&runtime, &registry, tables, 2) == 0);
     CHECK(ssbu_guest_memory_open(&arenas[0], BASE, 4096) == 0);

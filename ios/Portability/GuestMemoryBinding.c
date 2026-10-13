@@ -15,6 +15,7 @@ typedef struct {
     SSBUIOSGuestAddressSpace *space;
     SSBUIOSGuestMemory borrowed;
     uint64_t errno_address;
+    size_t guards;
 } ThreadBinding;
 
 static pthread_key_t binding_key;
@@ -124,6 +125,7 @@ void ssbu_guest_memory_unbind(void) {
     if (key_ready()) return;
     ThreadBinding *binding = pthread_getspecific(binding_key);
     if (!binding) return;
+    if (binding->guards) return;
     if (!pthread_setspecific(binding_key, NULL)) release_binding(binding);
 }
 
@@ -172,6 +174,18 @@ int ssbu_guest_errno_location(uint64_t *address) {
     if (!binding || !binding->errno_address) return -1;
     *address = binding->errno_address;
     return 0;
+}
+
+int ssbu_guest_memory_guard_begin(void) {
+    if (key_ready()) return -1;
+    ThreadBinding *binding = pthread_getspecific(binding_key);
+    if (!binding || binding->guards == SIZE_MAX) return -1;
+    ++binding->guards; return 0;
+}
+void ssbu_guest_memory_guard_end(void) {
+    if (key_ready()) return;
+    ThreadBinding *binding = pthread_getspecific(binding_key);
+    if (binding && binding->guards) --binding->guards;
 }
 
 void *ssbu_guest_host_pointer(uint64_t address, size_t length) {

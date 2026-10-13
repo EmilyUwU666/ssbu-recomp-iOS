@@ -29,7 +29,7 @@ int ssbu_guest_address_space_selftest(void);
 /* Generated call_indirect/host_import ABI and module-local nesting. */
 int ssbu_guest_runtime_selftest(void);
 
-/* Checked memory/timing ABI via optional static host-service imports. */
+/* Checked memory/string/integer/timing ABI and guest comparator callbacks. */
 int ssbu_guest_host_services_selftest(void);
 
 /* Explicit duplicate-export resolution and definition eligibility. */

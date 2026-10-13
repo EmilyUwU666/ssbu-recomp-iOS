@@ -6,6 +6,7 @@
 #define SSBU_IOS_TICK_HZ UINT64_C(19200000)
 /* Explicit newlib-style guest ABI; never substitute the host's ERANGE value. */
 #define SSBU_IOS_GUEST_ERANGE 34
+#define SSBU_IOS_SORT_SCRATCH_LIMIT ((size_t)64 * 1024 * 1024)
 typedef enum {
     SSBU_HOST_MEMCPY, SSBU_HOST_MEMMOVE, SSBU_HOST_MEMSET,
     SSBU_HOST_MEMCMP, SSBU_HOST_MEMCHR, SSBU_HOST_GET_TICK,
@@ -16,7 +17,8 @@ typedef enum {
     SSBU_HOST_STRCAT, SSBU_HOST_STRNCAT, SSBU_HOST_STRSTR,
     SSBU_HOST_STRPBRK, SSBU_HOST_STRSPN, SSBU_HOST_STRCSPN,
     SSBU_HOST_ERRNO, SSBU_HOST_ATOI, SSBU_HOST_ATOL, SSBU_HOST_ATOLL,
-    SSBU_HOST_STRTOL, SSBU_HOST_STRTOLL, SSBU_HOST_STRTOUL, SSBU_HOST_STRTOULL
+    SSBU_HOST_STRTOL, SSBU_HOST_STRTOLL, SSBU_HOST_STRTOUL, SSBU_HOST_STRTOULL,
+    SSBU_HOST_QSORT, SSBU_HOST_BSEARCH
 } SSBUIOSHostService;
 
 /* Checked Ctx service ABI. Invalid pointers, unsupported IDs or timing conversion
@@ -37,6 +39,15 @@ typedef enum {
  * checked call. Success/no conversion leaves errno unchanged. Invalid bases,
  * pointers, overlapping output cells or unterminated strings fail unchanged.
  * Atoi/atol/atoll reject overflow (undefined in the C API) without errno writes.
+ * Qsort/bsearch use checked static guest comparator callbacks with copied Ctx
+ * registers. Zero count does not access pointers/callbacks; nonzero count needs
+ * positive element size and a whole mapped array. Bsearch validates one key
+ * byte; the comparator is responsible for checking its actual key structure.
+ * Qsort scratch (payload plus two index arrays) is limited to 64 MiB. Sorting
+ * commits after comparisons; changed input is rejected without service writes.
+ * Comparators must not modify the array, must return consistently, and cannot
+ * exit non-locally. Callback side effects cannot be rolled back. Caller owns
+ * array synchronization. Qsort preserves registers; bsearch changes only x0.
  */
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *context);
 

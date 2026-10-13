@@ -25,6 +25,7 @@ int ssbu_guest_memory_read(const SSBUIOSGuestMemory *memory, uint64_t guest_addr
  * existing binding; unbind first. Caller keeps mapping alive until unbind.
  * Workers bind explicitly (no inheritance). Use GuestAddressSpace.h for
  * owned multi-arena lifetime/pinning.
+ * Unbind inside a GuestAddressSpace.h callback guard is ignored.
  */
 int ssbu_guest_memory_bind(const SSBUIOSGuestMemory *memory);
 void ssbu_guest_memory_unbind(void);

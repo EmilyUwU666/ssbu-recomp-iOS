@@ -41,4 +41,12 @@ int ssbu_guest_bound_span(uint64_t address, unsigned char **host, size_t *length
 int ssbu_guest_errno_bind(uint64_t address);
 int ssbu_guest_errno_location(uint64_t *address);
 
+/* Balanced scopes for host services retaining mapped pointers across normal
+ * guest callbacks. Memory unbind attempts inside any scope are ignored; new
+ * binds already reject replacement. Owned mappings remain pinned. Legacy
+ * callers still own the backing mapping and must not close it directly.
+ * Non-local exits/thread termination within callbacks are unsupported. */
+int ssbu_guest_memory_guard_begin(void);
+void ssbu_guest_memory_guard_end(void);
+
 #endif

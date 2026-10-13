@@ -478,6 +478,37 @@ No host errno or native pointer is exposed, and this is not a complete console
 TLS/reentrancy implementation. The guest errno ABI still needs actual SDK
 validation. See the [newlib integer conversion reference](https://sourceware.org/newlib/libc.html).
 
+Qsort and bsearch imports call statically registered guest comparator addresses
+through the checked runtime. Arguments identify guest array elements, and
+bsearch's first comparator argument is the original guest key pointer. Each
+callback receives a copied Ctx with the caller's stack/TLS and import diagnostic
+state; its signed 32-bit x0 result controls ordering. Nested imports and sorting
+a separate array are supported. Caller registers remain unchanged for qsort;
+bsearch changes x0 to a guest match address or zero. The source array must be
+properly ordered for bsearch. Element sizes must be positive for nonempty calls;
+zero-count calls access neither pointers nor the comparator.
+
+The complete array must fit one bound arena, with checked count/size arithmetic.
+Bsearch validates one key byte because the key structure may be smaller than an
+array element; its comparator must use checked reads for the actual key fields.
+Qsort uses a bottom-up index mergesort and a payload snapshot, with at most
+64 MiB of scratch (payload plus two index arrays). It changes array order only
+after all comparisons succeed and the input still matches the snapshot. Invalid
+callback targets, unsupported sizes, scratch exhaustion and detected array
+mutation fail without service writes. Callback side effects cannot be undone;
+the mutation check is not a transaction or race detector. Comparators must
+return normally, remain consistent and leave array contents untouched, as in
+the [qsort callback contract](https://pubs.opengroup.org/onlinepubs/009695399/functions/qsort.html).
+Non-local exits, automatic stack allocation and native callback pointers are
+unsupported. Caller-owned memory synchronization and guest stack/TLS setup
+remain required.
+
+Balanced worker memory guards keep bindings pinned during callback services;
+memory unbind attempts inside a guard are ignored, as runtime unbind attempts
+inside calls already are. Guards nest, and failure paths release them. Owned
+address spaces cannot close while bound. Borrowed legacy mappings must still
+be kept alive by their owner; guards cannot prevent direct owner misuse.
+
 Tick frequency matches upstream's 19,200,000 Hz. Tick reads use host
 CLOCK_MONOTONIC; integer signed conversions truncate toward zero and reject
 unrepresentable results. Sleep uses nanosleep with remaining-time retries after

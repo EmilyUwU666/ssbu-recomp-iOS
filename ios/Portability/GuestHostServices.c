@@ -23,6 +23,86 @@ static int convert_signed(uint64_t input, int to_tick, uint64_t *out) {
     *out = unsigned_bits((int64_t)value); return 0;
 }
 
+static int ascii_digit(unsigned char value) {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'z') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'Z') return value - 'A' + 10;
+    return -1;
+}
+static int intervals_overlap(uint64_t a, size_t an, uint64_t b, size_t bn) {
+    /* Only called for complete ranges already checked against bound arenas. */
+    return a < b + bn && b < a + an;
+}
+static int integer_service(SSBUIOSHostService service, Ctx *c) {
+    uint64_t errno_va;
+    if (service == SSBU_HOST_ERRNO) {
+        if (ssbu_guest_errno_location(&errno_va)) return -1;
+        c->x[0] = errno_va; return 0;
+    }
+    int simple = service >= SSBU_HOST_ATOI && service <= SSBU_HOST_ATOLL;
+    int is_unsigned = service == SSBU_HOST_STRTOUL || service == SSBU_HOST_STRTOULL;
+    int32_t base = 10;
+    if (!simple) {
+        uint32_t bits = (uint32_t)c->x[2];
+        memcpy(&base, &bits, sizeof base);
+        if (base != 0 && (base < 2 || base > 36)) return -1;
+    }
+    unsigned char *input;
+    size_t available;
+    if (ssbu_guest_bound_span(c->x[0], &input, &available)) return -1;
+    unsigned char *end = memchr(input, 0, available);
+    if (!end) return -1;
+    size_t length = (size_t)(end - input);
+    unsigned char *end_cell = NULL, *errno_cell = NULL;
+    if (!simple) {
+        if (ssbu_guest_errno_location(&errno_va)) return -1;
+        errno_cell = ssbu_guest_bound_pointer(errno_va, 4);
+        if (!errno_cell || intervals_overlap(c->x[0], length + 1, errno_va, 4)) return -1;
+        if (c->x[1]) {
+            end_cell = ssbu_guest_bound_pointer(c->x[1], 8);
+            if (!end_cell || intervals_overlap(c->x[0], length + 1, c->x[1], 8) ||
+                intervals_overlap(errno_va, 4, c->x[1], 8)) return -1;
+        }
+    }
+    size_t index = 0;
+    while (index < length && (input[index] == ' ' ||
+           (input[index] >= '\t' && input[index] <= '\r'))) ++index;
+    int negative = 0;
+    if (index < length && (input[index] == '+' || input[index] == '-'))
+        negative = input[index++] == '-';
+    if ((base == 0 || base == 16) && length - index >= 3 && input[index] == '0' &&
+        (input[index + 1] == 'x' || input[index + 1] == 'X') &&
+        ascii_digit(input[index + 2]) >= 0 && ascii_digit(input[index + 2]) < 16) {
+        index += 2; base = 16;
+    } else if (!base) base = index < length && input[index] == '0' ? 8 : 10;
+    size_t first_digit = index;
+    uint64_t maximum = is_unsigned ? UINT64_MAX :
+        service == SSBU_HOST_ATOI ? (negative ? UINT64_C(2147483648) : INT32_MAX) :
+        negative ? UINT64_C(0x8000000000000000) : INT64_MAX;
+    uint64_t value = 0;
+    int overflow = 0;
+    for (; index < length; ++index) {
+        int digit = ascii_digit(input[index]);
+        if (digit < 0 || digit >= base) break;
+        if (value > maximum / (unsigned)base ||
+            (value == maximum / (unsigned)base && (unsigned)digit > maximum % (unsigned)base))
+            overflow = 1;
+        else if (!overflow) value = value * (unsigned)base + (unsigned)digit;
+    }
+    int converted = index != first_digit;
+    if (overflow && simple) return -1;
+    uint64_t result = overflow ? maximum : value;
+    if (negative && !(overflow && is_unsigned)) result = 0 - result;
+    uint64_t end_va = c->x[0] + (converted ? index : 0);
+    if (end_cell) memcpy(end_cell, &end_va, sizeof end_va);
+    if (overflow) {
+        uint32_t error = SSBU_IOS_GUEST_ERANGE;
+        memcpy(errno_cell, &error, sizeof error);
+    }
+    c->x[0] = result;
+    return 0;
+}
+
 static int extended_string_service(SSBUIOSHostService service, Ctx *c) {
     unsigned char *destination, *source;
     size_t destination_size, source_size;
@@ -129,6 +209,8 @@ static int string_service(SSBUIOSHostService service, Ctx *c) {
 
 int ssbu_ios_host_service(SSBUIOSHostService service, Ctx *c) {
     if (!c) return -1;
+    if (service >= SSBU_HOST_ERRNO && service <= SSBU_HOST_STRTOULL)
+        return integer_service(service, c);
     if (service >= SSBU_HOST_STRLEN && service <= SSBU_HOST_STRRCHR)
         return string_service(service, c);
     if (service >= SSBU_HOST_STRCAT && service <= SSBU_HOST_STRCSPN)
@@ -225,6 +307,14 @@ ADAPTER(h_strstr, SSBU_HOST_STRSTR)
 ADAPTER(h_strpbrk, SSBU_HOST_STRPBRK)
 ADAPTER(h_strspn, SSBU_HOST_STRSPN)
 ADAPTER(h_strcspn, SSBU_HOST_STRCSPN)
+ADAPTER(h_errno, SSBU_HOST_ERRNO)
+ADAPTER(h_atoi, SSBU_HOST_ATOI)
+ADAPTER(h_atol, SSBU_HOST_ATOL)
+ADAPTER(h_atoll, SSBU_HOST_ATOLL)
+ADAPTER(h_strtol, SSBU_HOST_STRTOL)
+ADAPTER(h_strtoll, SSBU_HOST_STRTOLL)
+ADAPTER(h_strtoul, SSBU_HOST_STRTOUL)
+ADAPTER(h_strtoull, SSBU_HOST_STRTOULL)
 
 static const FnEntry functions[] = {
     {0x100, h_memcpy}, {0x110, h_memmove}, {0x120, h_memset}, {0x130, h_memcmp},
@@ -233,7 +323,9 @@ static const FnEntry functions[] = {
     {0x1b0, h_strlen}, {0x1c0, h_strnlen}, {0x1d0, h_strcmp}, {0x1e0, h_strncmp},
     {0x1f0, h_strcpy}, {0x200, h_strncpy}, {0x210, h_strchr}, {0x220, h_strrchr},
     {0x230, h_strcat}, {0x240, h_strncat}, {0x250, h_strstr}, {0x260, h_strpbrk},
-    {0x270, h_strspn}, {0x280, h_strcspn}
+    {0x270, h_strspn}, {0x280, h_strcspn}, {0x290, h_errno}, {0x2a0, h_atoi},
+    {0x2b0, h_atol}, {0x2c0, h_atoll}, {0x2d0, h_strtol}, {0x2e0, h_strtoll},
+    {0x2f0, h_strtoul}, {0x300, h_strtoull}
 };
 /* Exact upstream nn::os import names, byte-sorted for registry lookup. */
 static const SSBUIOSGuestExport exports[] = {
@@ -243,12 +335,16 @@ static const SSBUIOSGuestExport exports[] = {
     {"_ZN2nn2os13GetSystemTickEv", 0x150},
     {"_ZN2nn2os17ConvertToTimeSpanENS0_4TickE", 0x180},
     {"_ZN2nn2os22GetSystemTickFrequencyEv", 0x160},
+    {"__errno", 0x290},
+    {"__errno_location", 0x290},
+    {"atoi", 0x2a0}, {"atol", 0x2b0}, {"atoll", 0x2c0},
     {"memchr", 0x140}, {"memcmp", 0x130}, {"memcpy", 0x100},
     {"memmove", 0x110}, {"memset", 0x120},
     {"strcat", 0x230}, {"strchr", 0x210}, {"strcmp", 0x1d0}, {"strcpy", 0x1f0},
     {"strcspn", 0x280}, {"strlen", 0x1b0}, {"strncat", 0x240},
     {"strncmp", 0x1e0}, {"strncpy", 0x200}, {"strnlen", 0x1c0},
-    {"strpbrk", 0x260}, {"strrchr", 0x220}, {"strspn", 0x270}, {"strstr", 0x250}
+    {"strpbrk", 0x260}, {"strrchr", 0x220}, {"strspn", 0x270}, {"strstr", 0x250},
+    {"strtol", 0x2d0}, {"strtoll", 0x2e0}, {"strtoul", 0x2f0}, {"strtoull", 0x300}
 };
 const SSBUIOSGuestModule ssbu_ios_host_services_module = {
     "ios-host-services", SSBU_IOS_HOST_SERVICES_BASE, SSBU_IOS_HOST_SERVICES_BASE,

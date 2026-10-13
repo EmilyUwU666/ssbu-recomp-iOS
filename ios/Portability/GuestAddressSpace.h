@@ -33,4 +33,12 @@ void *ssbu_guest_bound_pointer(uint64_t guest_address, size_t length);
  * Rejects one-past-end and leaves outputs unchanged on failure. */
 int ssbu_guest_bound_span(uint64_t address, unsigned char **host, size_t *length);
 
+/* Attach a nonzero, 4-byte-aligned guest errno cell to this worker's current
+ * memory binding. The cell must fit an arena; failure preserves the previous
+ * location. No initialization/allocation occurs. Unbind/thread exit discards
+ * the location; other workers do not inherit it. Callers provide distinct cells
+ * or synchronize shared cells. Getter leaves output unchanged on failure. */
+int ssbu_guest_errno_bind(uint64_t address);
+int ssbu_guest_errno_location(uint64_t *address);
+
 #endif

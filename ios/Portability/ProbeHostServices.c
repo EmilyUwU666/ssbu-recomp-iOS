@@ -4,6 +4,8 @@
 #include "GuestAddressSpace.h"
 #include "Probe.h"
 #include <stdint.h>
+#include <stdlib.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -30,6 +32,11 @@ static void caller(Ctx *c) {
     host_import(c, 4); c->x[8] = c->x[0];
     c->x[30] = BASE + 0x11c;
     host_import(c, 5); c->x[9] = c->x[0];
+    c->x[0] = DATA + 640; c->x[1] = DATA + 680; c->x[2] = 0;
+    c->x[30] = BASE + 0x120;
+    host_import(c, 6); c->x[10] = c->x[0];
+    c->x[30] = BASE + 0x124;
+    host_import(c, 7); c->x[11] = c->x[0];
     c->x[30] = lr;
 }
 
@@ -50,10 +57,10 @@ int ssbu_guest_host_services_selftest(void) {
     const DynSym imports[] = {
         {"memcpy", 0, 0}, {"_ZN2nn2os22GetSystemTickFrequencyEv", 0, 0},
         {"_ZN2nn2os13GetSystemTickEv", 0, 0}, {"strlen", 0, 0},
-        {"strcat", 0, 0}, {"strstr", 0, 0}
+        {"strcat", 0, 0}, {"strstr", 0, 0}, {"strtoull", 0, 0}, {"__errno_location", 0, 0}
     };
     SSBUIOSModuleSymbols tables[] = {
-        {"host-caller", imports, 6, NULL}, ssbu_ios_host_services_symbols
+        {"host-caller", imports, 8, NULL}, ssbu_ios_host_services_symbols
     };
     SSBUIOSModuleRegistry registry = {0};
     unsigned char original[32];
@@ -68,6 +75,9 @@ int ssbu_guest_host_services_selftest(void) {
     CHECK(ssbu_guest_address_space_bind(space) == 0 && ssbu_ios_runtime_bind(runtime) == 0);
     memcpy(ssbu_guest_bound_pointer(DATA + 256, 5), "abba", 5);
     memcpy(ssbu_guest_bound_pointer(DATA + 384, 2), "x", 2);
+    memcpy(ssbu_guest_bound_pointer(DATA + 640, 13), "0xffffsuffix", 13);
+    CHECK(ssbu_guest_errno_bind(DATA + 700) == 0);
+    wr32(DATA + 700, 123);
     Ctx c = {0};
     c.x[0] = DATA + 64; c.x[1] = BASE + 64; c.x[2] = 16;
     c.x[30] = BASE + 0x900; c.in_import = "service-outer"; c.import_from = 42;
@@ -75,11 +85,17 @@ int ssbu_guest_host_services_selftest(void) {
     CHECK(c.x[4] == DATA + 64 && c.x[5] == SSBU_IOS_TICK_HZ && c.x[6] > 0);
     CHECK(c.x[7] == 4);
     CHECK(c.x[8] == DATA + 384 && c.x[9] == DATA + 385);
+    CHECK(c.x[10] == 0xffff && c.x[11] == DATA + 700 && rd64(DATA + 680) == DATA + 646);
+    CHECK(rd32(DATA + 700) == 123);
     CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 384, 6), "xabba", 6));
     CHECK(!memcmp(ssbu_guest_bound_pointer(DATA + 64, 16), original, 16));
     CHECK(!strcmp(c.in_import, "service-outer") && c.import_from == 42 && c.x[30] == BASE + 0x900);
 
     uint64_t address = 0;
+    uint64_t errno_adapter = 0;
+    CHECK(ssbu_ios_modules_resolve(&registry, "__errno", &address) == 0 &&
+          ssbu_ios_modules_resolve(&registry, "__errno_location", &errno_adapter) == 0 &&
+          address == errno_adapter);
     CHECK(ssbu_ios_modules_resolve(&registry, "memset", &address) == 0 &&
           address >= SSBU_IOS_HOST_SERVICES_BASE);
     c.x[0] = DATA + 128; c.x[1] = 0x123456ab; c.x[2] = 16;
@@ -239,6 +255,74 @@ int ssbu_guest_host_services_selftest(void) {
               c.x[0] == (scans[i] == SSBU_HOST_STRSTR ? DATA + 260 : 0));
     }
 
+    /* Differential C-locale parsing against host libc, including limits,
+     * overflow end pointers, no conversion and prefixes across all bases. */
+    const char *numbers[] = {"", " \t-", "xyz", "0", "09", "0x", "0xG", "0x1f!",
+        "-1", "+42tail", " \t\n\r\v\f-077end", "9223372036854775807",
+        "9223372036854775808", "-9223372036854775808", "-9223372036854775809",
+        "18446744073709551615", "18446744073709551616", "-18446744073709551615",
+        "-18446744073709551616", "zzZZz", "0123456789abcdefABCDEFz"};
+    const SSBUIOSHostService parsers[] = {SSBU_HOST_STRTOL, SSBU_HOST_STRTOLL,
+                                        SSBU_HOST_STRTOUL, SSBU_HOST_STRTOULL};
+    for (size_t p = 0; p < sizeof parsers / sizeof parsers[0]; ++p) {
+        for (int base = 0; base <= 36; ++base) {
+            if (base == 1) continue;
+            for (size_t n = 0; n < sizeof numbers / sizeof numbers[0]; ++n) {
+                memcpy(ssbu_guest_bound_pointer(BASE + 768, strlen(numbers[n]) + 1),
+                       numbers[n], strlen(numbers[n]) + 1);
+                char *host_end;
+                errno = 0;
+                uint64_t expected = p >= 2 ? strtoull(numbers[n], &host_end, base) :
+                                            (uint64_t)strtoll(numbers[n], &host_end, base);
+                uint32_t expected_errno = errno == ERANGE ? SSBU_IOS_GUEST_ERANGE : 123;
+                wr32(DATA + 700, 123); wr64(DATA + 680, UINT64_MAX);
+                c.x[0] = BASE + 768; c.x[1] = DATA + 680; c.x[2] = (unsigned)base;
+                CHECK(ssbu_ios_host_service(parsers[p], &c) == 0 && c.x[0] == expected);
+                CHECK(rd64(DATA + 680) == BASE + 768 + (size_t)(host_end - numbers[n]));
+                CHECK(rd32(DATA + 700) == expected_errno);
+            }
+        }
+    }
+    CHECK(ssbu_guest_errno_bind(DATA + 4094) == -1);
+    CHECK(ssbu_guest_errno_bind(0) == -1);
+    uint64_t errno_location = 0;
+    CHECK(ssbu_guest_errno_location(&errno_location) == 0 && errno_location == DATA + 700);
+    const int invalid_bases[] = {-1, 1, 37};
+    for (size_t i = 0; i < sizeof invalid_bases / sizeof invalid_bases[0]; ++i) {
+        c.x[0] = BASE + 768; c.x[1] = DATA + 680; c.x[2] = (uint32_t)invalid_bases[i];
+        wr64(DATA + 680, 99); wr32(DATA + 700, 123);
+        CHECK(unchanged_error(SSBU_HOST_STRTOL, &c) && rd64(DATA + 680) == 99 && rd32(DATA + 700) == 123);
+    }
+    c.x[2] = 10; c.x[1] = DATA + 4092;
+    CHECK(unchanged_error(SSBU_HOST_STRTOULL, &c));
+    c.x[1] = DATA + 700;
+    CHECK(unchanged_error(SSBU_HOST_STRTOULL, &c) && rd32(DATA + 700) == 123);
+    c.x[1] = BASE + 768;
+    CHECK(unchanged_error(SSBU_HOST_STRTOL, &c));
+    c.x[0] = BASE + 4095; c.x[1] = DATA + 680;
+    CHECK(unchanged_error(SSBU_HOST_STRTOL, &c) && rd64(DATA + 680) == 99);
+    CHECK(ssbu_guest_errno_bind(BASE + 768) == 0);
+    c.x[0] = BASE + 768;
+    CHECK(unchanged_error(SSBU_HOST_STRTOL, &c));
+    CHECK(ssbu_guest_errno_bind(DATA + 700) == 0);
+    /* Int-returning atoi is 32-bit; long and long long are guest LP64. */
+    memcpy(ssbu_guest_bound_pointer(BASE + 768, 12), "-2147483648", 12);
+    c.x[0] = BASE + 768;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_ATOI, &c) == 0 && c.x[0] == (uint64_t)(int64_t)INT32_MIN);
+    memcpy(ssbu_guest_bound_pointer(BASE + 768, 11), "2147483648", 11);
+    c.x[0] = BASE + 768;
+    CHECK(unchanged_error(SSBU_HOST_ATOI, &c));
+    CHECK(ssbu_ios_host_service(SSBU_HOST_ATOL, &c) == 0 && c.x[0] == UINT64_C(2147483648));
+    memcpy(ssbu_guest_bound_pointer(BASE + 768, 21), "-9223372036854775808", 21);
+    c.x[0] = BASE + 768;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_ATOLL, &c) == 0 && c.x[0] == (uint64_t)INT64_MIN);
+    memcpy(ssbu_guest_bound_pointer(BASE + 768, 21), "18446744073709551616", 21);
+    c.x[0] = BASE + 768; c.x[1] = 0; c.x[2] = 10;
+    CHECK(ssbu_ios_host_service(SSBU_HOST_STRTOULL, &c) == 0 && c.x[0] == UINT64_MAX &&
+          rd32(DATA + 700) == SSBU_IOS_GUEST_ERANGE);
+    c.x[0] = BASE + 768;
+    CHECK(unchanged_error(SSBU_HOST_ATOL, &c) && rd32(DATA + 700) == SSBU_IOS_GUEST_ERANGE);
+
     /* Exact signed conversions, including truncation toward zero. */
     c.x[0] = 1000000000;
     CHECK(ssbu_ios_host_service(SSBU_HOST_NS_TO_TICK, &c) == 0 && c.x[0] == SSBU_IOS_TICK_HZ);
@@ -263,6 +347,13 @@ int ssbu_guest_host_services_selftest(void) {
     ssbu_guest_memory_unbind();
     c.x[0] = DATA + 64; c.x[1] = BASE + 64; c.x[2] = 8;
     CHECK(unchanged_error(SSBU_HOST_MEMCPY, &c));
+    CHECK(unchanged_error(SSBU_HOST_ERRNO, &c));
+    errno_location = 42;
+    CHECK(ssbu_guest_errno_location(&errno_location) == -1 && errno_location == 42);
+    CHECK(ssbu_guest_address_space_bind(space) == 0);
+    c.x[0] = BASE + 768; c.x[1] = DATA + 680; c.x[2] = 10;
+    CHECK(unchanged_error(SSBU_HOST_STRTOULL, &c)); /* Rebind never inherits errno. */
+    CHECK(ssbu_guest_errno_bind(DATA + 700) == 0);
 done:
     ssbu_ios_runtime_unbind();
     ssbu_guest_memory_unbind();

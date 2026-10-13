@@ -23,13 +23,19 @@ typedef struct {
 
 static void *worker(void *opaque) {
     Worker *w = opaque;
+    uint64_t location = 99;
     /* Binding the parent's thread never binds a newly created worker. */
-    if (ssbu_guest_bound_pointer(BASE + 128, 4) != NULL ||
+    if (ssbu_guest_errno_location(&location) != -1 || location != 99 ||
+        ssbu_guest_bound_pointer(BASE + 128, 4) != NULL ||
         ssbu_guest_address_space_bind(w->space)) {
         w->failed = 1;
     } else {
         if (rd32(BASE + 128) != w->expected) w->failed = 1;
         wr32(BASE + 128, w->expected + 1);
+        if (ssbu_guest_errno_location(&location) != -1 ||
+            ssbu_guest_errno_bind(BASE + 512) ||
+            ssbu_guest_errno_location(&location) || location != BASE + 512) w->failed = 1;
+        wr32(BASE + 512, w->expected);
         if (ssbu_guest_address_space_bind(w->space) != -1) w->failed = 1;
     }
     pthread_mutex_lock(&w->mutex);
@@ -85,6 +91,8 @@ int ssbu_guest_address_space_selftest(void) {
     CHECK(ssbu_guest_address_space_create(&other, &arenas[2], 1) == 0 &&
           !arenas[2].host);
     CHECK(ssbu_guest_address_space_bind(space) == 0);
+    CHECK(ssbu_guest_errno_bind(BASE + 516) == 0);
+    wr32(BASE + 516, 111);
     CHECK(rd32(BASE) == 10);
     wr32(BASE + 0x3000, 42);
     CHECK(rd32(BASE + 0x3000) == 42);
@@ -107,6 +115,9 @@ int ssbu_guest_address_space_selftest(void) {
     int b_failed = b.failed;
     pthread_mutex_unlock(&b.mutex);
     CHECK(!a_failed && !b_failed);
+    uint64_t parent_errno = 0;
+    CHECK(ssbu_guest_errno_location(&parent_errno) == 0 && parent_errno == BASE + 516 &&
+          rd32(parent_errno) == 111 && rd32(BASE + 512) == a.expected);
     CHECK(rd32(BASE) == 10 && rd32(BASE + 128) == 12);
     ssbu_guest_memory_unbind();
     CHECK(ssbu_guest_bound_pointer(BASE, 4) == NULL);
@@ -116,6 +127,7 @@ int ssbu_guest_address_space_selftest(void) {
     release_worker(&a, ta, started_a); started_a = 0;
     release_worker(&b, tb, started_b); started_b = 0;
     CHECK(ssbu_guest_address_space_bind(other) == 0);
+    CHECK(ssbu_guest_errno_location(&parent_errno) == -1 && rd32(BASE + 512) == b.expected);
     CHECK(rd32(BASE + 128) == 22); /* worker wrote the other space, same VA */
     ssbu_guest_memory_unbind();
     CHECK(ssbu_guest_address_space_close(&space) == 0 && !space);
@@ -151,6 +163,8 @@ int ssbu_guest_address_space_selftest(void) {
     /* Legacy borrowed single mapping also refuses implicit replacement. */
     CHECK(ssbu_guest_memory_open(&arenas[0], BASE, 4096) == 0);
     CHECK(ssbu_guest_memory_bind(&arenas[0]) == 0);
+    CHECK(ssbu_guest_errno_bind(BASE + 512) == 0);
+    CHECK(ssbu_guest_errno_location(&parent_errno) == 0 && parent_errno == BASE + 512);
     CHECK(ssbu_guest_bound_span(BASE + 4095, &span, &remaining) == 0 && remaining == 1);
     CHECK(ssbu_guest_memory_bind(&arenas[0]) == -1);
 done:

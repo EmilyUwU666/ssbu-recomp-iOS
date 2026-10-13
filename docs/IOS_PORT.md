@@ -454,6 +454,30 @@ The checked span API exposes only the remainder of one arena with a borrowed
 binding lifetime. Callers must synchronize concurrent changes to string memory;
 the validation/write sequence is not a transaction against other workers.
 
+Integer imports include atoi, atol, atoll, strtol, strtoll, strtoul and strtoull,
+plus __errno and __errno_location aliases. This is an explicit LP64, ASCII/C-locale ABI: int is 32 bits;
+long and long long are 64 bits. Base zero recognizes decimal, octal and 0x
+hexadecimal prefixes; bases 2..36 are supported. C23 binary prefixes and locale
+extensions are not implemented. Strto functions consume all valid digits even
+on overflow, return a saturated limit, and store guest ERANGE (newlib-style
+value 34). Unsigned negative values wrap when representable. Successful/no-digit
+conversions preserve errno; no-digit end pointers point to the original input.
+Invalid bases fail the checked call rather than publishing a result/errno.
+Simple atoi/atol/atoll overflow is rejected rather than invoking undefined C
+behavior. Numeric strings must terminate inside one bound arena.
+
+Each worker must call `ssbu_guest_errno_bind(nonzero_aligned_guest_address)`
+after its memory bind before using errno-location or strto imports. This validates a
+four-byte cell without allocating or initializing it. Owned address-space
+bindings pin the mapping; legacy bindings remain borrowed. The location is
+discarded on memory unbind/thread exit and does not inherit into other workers.
+The caller reserves distinct cells or synchronizes shared cells. __errno returns
+the guest address. Optional eight-byte end-pointer outputs may be in another
+arena; input/output/errno overlap or an invalid output range fails before writes.
+No host errno or native pointer is exposed, and this is not a complete console
+TLS/reentrancy implementation. The guest errno ABI still needs actual SDK
+validation. See the [newlib integer conversion reference](https://sourceware.org/newlib/libc.html).
+
 Tick frequency matches upstream's 19,200,000 Hz. Tick reads use host
 CLOCK_MONOTONIC; integer signed conversions truncate toward zero and reject
 unrepresentable results. Sleep uses nanosleep with remaining-time retries after
